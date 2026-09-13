@@ -13,6 +13,17 @@ const FEATURE_LABELS: Record<FeatureKey | 'default', string> = {
   default: '全局默认',
 }
 
+const COMMON_BASEURLS = [
+  'https://api.deepseek.com',
+  'https://api.openai.com/v1',
+  'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  'https://open.bigmodel.cn/api/paas/v4',
+  'https://api.siliconflow.cn/v1',
+  'https://api.moonshot.cn/v1',
+  'https://api.deepseek.com/anthropic',
+  'http://127.0.0.1:15721',
+]
+
 export default function Settings() {
   const [config, setConfig] = useState<PublicModelConfig | null>(null)
   const [vaultPath, setVaultPath] = useState<string>('')
@@ -32,7 +43,7 @@ export default function Settings() {
   const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
   const [modelLists, setModelLists] = useState<Record<string, ModelInfo[]>>({})
   const [modelListStatus, setModelListStatus] = useState<Record<string, string | null>>({})
-  const [providerPreFillId, setProviderPreFillId] = useState<string | null>(null)
+  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null)
 
   const loadConfig = useCallback(async () => {
     setLoading(true)
@@ -74,21 +85,6 @@ export default function Settings() {
   useEffect(() => {
     loadConfig()
   }, [loadConfig])
-
-  // Scroll to and focus provider editor when pre-filling
-  useEffect(() => {
-    if (editingProvider && providerPreFillId) {
-      const editor = document.getElementById('provider-editor')
-      if (editor) {
-        editor.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        // Focus the baseUrl input after scroll
-        setTimeout(() => {
-          const baseUrlInput = editor.querySelector<HTMLInputElement>('[data-field="baseUrl"]')
-          baseUrlInput?.focus()
-        }, 300)
-      }
-    }
-  }, [editingProvider, providerPreFillId])
 
   const handleTest = async (key: string, choice: ModelChoice) => {
     setTestingKey(key)
@@ -207,6 +203,25 @@ export default function Settings() {
       .join('\n')
   }
 
+  const toggleExpandProvider = (providerId: string) => {
+    if (expandedProviderId === providerId) {
+      setExpandedProviderId(null)
+      setEditingProvider(null)
+    } else {
+      const provider = config?.providers.find(p => p.id === providerId)
+      if (provider) {
+        setEditingProvider({
+          id: provider.id,
+          label: provider.label,
+          baseUrl: provider.baseUrl,
+          format: provider.format,
+          headers: provider.headers,
+        })
+        setExpandedProviderId(providerId)
+      }
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -236,15 +251,211 @@ export default function Settings() {
 
       {error && <div className={cuNotice('error') + ' mb-6'}>{error}</div>}
 
+      {/* Provider 管理 */}
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold text-white/90 mb-2">Provider 管理</h2>
+        <p className="text-white/50 text-xs mb-4">管理 API 服务商的连接信息、协议格式和密钥。点击行展开编辑。</p>
+        <div className="space-y-4">
+          {config.providers.map((p) => {
+            const hasKey = config.keysSet[p.id] ?? false
+            const isExpanded = expandedProviderId === p.id && editingProvider
+
+            return (
+              <div key={p.id} className={cuCard({ tight: true })}>
+                {/* Collapsed row */}
+                <div
+                  className="flex items-center justify-between cursor-pointer"
+                  onClick={() => toggleExpandProvider(p.id)}
+                >
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className={`${cuIconBox} h-8 w-8`}>
+                      <Icon name="settings" className="h-4 w-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white/90 text-sm">{p.id}</span>
+                        {p.label && <span className="text-white/60 text-xs">· {p.label}</span>}
+                      </div>
+                      <div className="text-white/50 text-xs truncate">{p.baseUrl || '未配置'}</div>
+                    </div>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/50 shrink-0">
+                      {p.format === 'anthropic' ? 'Anthropic' : 'OpenAI'}
+                    </span>
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full ${
+                        hasKey ? 'bg-mint/20 text-mint' : 'bg-white/10 text-white/50'
+                      } shrink-0`}
+                    >
+                      {hasKey ? '已配置密钥' : '未配置密钥'}
+                    </span>
+                    <Icon
+                      name={isExpanded ? 'close' : 'edit'}
+                      className="h-4 w-4 text-white/40 shrink-0"
+                    />
+                  </div>
+                </div>
+
+                {/* Expanded editor */}
+                {isExpanded && editingProvider && (
+                  <div className="mt-4 pt-4 border-t border-white/10" onClick={(e) => e.stopPropagation()}>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={editingProvider.id}
+                        onChange={(e) => setEditingProvider({ ...editingProvider, id: e.target.value })}
+                        placeholder="ID（如 my-provider）"
+                        className="cu-input text-sm px-3 py-1.5 w-full"
+                        data-field="id"
+                      />
+                      <input
+                        type="text"
+                        value={editingProvider.label}
+                        onChange={(e) => setEditingProvider({ ...editingProvider, label: e.target.value })}
+                        placeholder="显示名称（可选）"
+                        className="cu-input text-sm px-3 py-1.5 w-full"
+                        data-field="label"
+                      />
+                      <div>
+                        <input
+                          type="text"
+                          value={editingProvider.baseUrl}
+                          onChange={(e) => setEditingProvider({ ...editingProvider, baseUrl: e.target.value })}
+                          placeholder="Base URL"
+                          className="cu-input text-sm px-3 py-1.5 w-full"
+                          data-field="baseUrl"
+                          list="cu-baseurls"
+                        />
+                        <datalist id="cu-baseurls">
+                          {COMMON_BASEURLS.map((url) => (
+                            <option key={url} value={url} />
+                          ))}
+                        </datalist>
+                        <p className="text-white/40 text-xs mt-1">从常用列表中选择或自行输入</p>
+                      </div>
+                      <div>
+                        <label className="block text-white/70 text-xs mb-1">协议格式</label>
+                        <select
+                          value={editingProvider.format ?? 'openai'}
+                          onChange={(e) =>
+                            setEditingProvider({
+                              ...editingProvider,
+                              format: e.target.value as 'openai' | 'anthropic',
+                            })
+                          }
+                          className="cu-input text-sm px-3 py-1.5 w-full"
+                        >
+                          <option value="openai">OpenAI 兼容</option>
+                          <option value="anthropic">Anthropic 兼容</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-white/70 text-xs mb-1">附加请求头</label>
+                        <textarea
+                          value={formatHeaders(editingProvider.headers)}
+                          onChange={(e) =>
+                            setEditingProvider({
+                              ...editingProvider,
+                              headers: parseHeaders(e.target.value),
+                            })
+                          }
+                          placeholder="Key: Value（每行一个）"
+                          className="cu-textarea text-sm px-3 py-1.5 w-full h-20"
+                        />
+                      </div>
+                      <div className={cuNotice('info') + ' text-xs'}>
+                        <p className="mb-1">
+                          <strong>openai</strong> 格式：聊天走 baseUrl/chat/completions，模型列表走 baseUrl/models
+                        </p>
+                        <p>
+                          <strong>anthropic</strong> 格式：聊天走 baseUrl/v1/messages，模型列表走 baseUrl/v1/models
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="password"
+                          value={providerKeys[p.id] ?? ''}
+                          onChange={(e) =>
+                            setProviderKeys((prev) => ({ ...prev, [p.id]: e.target.value }))
+                          }
+                          placeholder="输入 API Key"
+                          className="cu-input text-sm px-3 py-1.5 flex-1"
+                        />
+                        <button
+                          onClick={() => handleSaveKey(p.id)}
+                          disabled={!providerKeys[p.id] || savingKeyFor === p.id}
+                          className={`${cuCtaPrimary} px-4 py-1.5 text-xs`}
+                        >
+                          {savingKeyFor === p.id ? <Spinner label="" /> : '保存密钥'}
+                        </button>
+                        {hasKey && (
+                          <button
+                            onClick={() => handleRemoveKey(p.id)}
+                            className={`${cuCtaGhost} px-2 py-1 text-xs text-coral`}
+                            aria-label={`清除 ${p.id} 密钥`}
+                          >
+                            <Icon name="trash" className="h-4 w-4" />
+                            清除
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-white/40 text-xs">
+                        密钥通过操作系统凭证库加密存储，不会在界面上回显
+                      </p>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={handleSaveProvider}
+                          disabled={!editingProvider.id || !editingProvider.baseUrl}
+                          className={`${cuCtaPrimary} px-4 py-1.5 text-xs`}
+                        >
+                          保存
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingProvider(null)
+                            setExpandedProviderId(null)
+                          }}
+                          className={`${cuCtaGhost} px-4 py-1.5 text-xs`}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+
+          <button
+            onClick={() => {
+              const newId = `provider-${Date.now()}`
+              setEditingProvider({
+                id: newId,
+                label: '',
+                baseUrl: '',
+                format: 'openai',
+                headers: {},
+              })
+              setExpandedProviderId(newId)
+            }}
+            className={`${cuCtaGhost} px-4 py-2 text-sm`}
+          >
+            <Icon name="plus" className="h-4 w-4" />
+            新建 Provider
+          </button>
+        </div>
+      </section>
+
+      {/* 模型配置 */}
       <section className="mb-10">
         <h2 className="text-xl font-semibold text-white/90 mb-2">模型配置</h2>
-        <p className="text-white/50 text-xs mb-4">Provider 不限于预置的几个：任意填 id 即可，再按需补上 baseUrl / 协议格式 / 请求头。</p>
+        <p className="text-white/50 text-xs mb-4">为每个功能选择要使用的模型。Provider 不限于预置的几个，任意填 id 即可。</p>
         <div className={cuCard({ tight: true })}>
-          <div className="space-y-4">
+          <div className="space-y-5">
             {/* Global datalist for provider suggestions */}
             <datalist id="cu-providers">
               {config.providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
+                <option key={p.id} value={p.id}>{p.label || p.id}</option>
               ))}
             </datalist>
             {(['default', ...FEATURE_KEYS] as const).map((feature) => {
@@ -253,13 +464,16 @@ export default function Settings() {
               const test = testResults[testKey]
               const isTesting = testingKey === testKey
               const isUnknownProvider = !config.providers.find(p => p.id === choice.provider)
+              const provider = config.providers.find(p => p.id === choice.provider)
+
               return (
                 <div key={feature}>
-                  <div className="flex items-center gap-4">
+                  {/* Controls row */}
+                  <div className="flex items-center gap-3">
                     <label className="w-36 text-white/70 text-sm shrink-0">
                       {FEATURE_LABELS[feature]}
                     </label>
-                    <div className="w-40">
+                    <div className="w-44 shrink-0">
                       <input
                         type="text"
                         value={choice.provider}
@@ -280,7 +494,7 @@ export default function Settings() {
                         placeholder="Provider ID"
                       />
                     </div>
-                    <div className="flex-1 relative">
+                    <div className="w-48 shrink-0 relative">
                       <input
                         type="text"
                         value={choice.model}
@@ -313,7 +527,7 @@ export default function Settings() {
                     <button
                       onClick={() => handleFetchModels(choice.provider)}
                       disabled={fetchingModels[choice.provider]}
-                      className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
+                      className={`${cuCtaGhost} px-3 py-1.5 text-xs shrink-0`}
                       aria-label={`拉取 ${choice.provider} 的模型列表`}
                     >
                       {fetchingModels[choice.provider] ? (
@@ -328,264 +542,78 @@ export default function Settings() {
                     <button
                       onClick={() => handleTest(testKey, choice)}
                       disabled={isTesting}
-                      className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
+                      className={`${cuCtaGhost} px-3 py-1.5 text-xs shrink-0`}
                     >
                       {isTesting ? <Spinner label="" /> : '测试'}
                     </button>
-                    {test && (
-                      <span className="text-xs text-white/60">
-                        {test.latency !== undefined
-                          ? `${test.latency}ms`
-                          : test.error}
-                      </span>
+                  </div>
+
+                  {/* Status line below */}
+                  <div className="mt-2 ml-36 text-xs space-y-1">
+                    {/* Provider resolution summary */}
+                    {provider ? (
+                      <div className="text-white/60 flex items-center gap-2">
+                        <span className="text-mint">⟶</span>
+                        <span className="font-mono">{provider.baseUrl || '未配置URL'}</span>
+                        <span>·</span>
+                        <span>{provider.format === 'anthropic' ? 'Anthropic' : 'OpenAI'}</span>
+                        <span>·</span>
+                        <span className={config.keysSet[provider.id] ? 'text-mint' : 'text-coral'}>
+                          {config.keysSet[provider.id] ? '密钥已配置' : '未配置密钥'}
+                        </span>
+                      </div>
+                    ) : isUnknownProvider && (
+                      <div className={cuNotice('warn') + ' text-xs flex items-center gap-2'}>
+                        <span>
+                          还没有这个 provider：<code className="font-mono">{choice.provider}</code>。
+                          可以先到上方「Provider 管理」把它建出来，或者直接保存——调用时会报错提示。
+                        </span>
+                        <button
+                          onClick={() => {
+                            setEditingProvider({
+                              id: choice.provider,
+                              label: '',
+                              baseUrl: '',
+                              format: 'openai',
+                              headers: {},
+                            })
+                            setExpandedProviderId(choice.provider)
+                          }}
+                          className={`${cuCtaGhost} px-2 py-1 text-xs whitespace-nowrap`}
+                        >
+                          补建这个 Provider
+                        </button>
+                      </div>
                     )}
+
+                    {/* Test results */}
+                    {test && (
+                      <div className={test.latency !== undefined ? 'text-mint' : 'text-coral'}>
+                        {test.latency !== undefined ? `${test.latency}ms` : test.error}
+                      </div>
+                    )}
+
+                    {/* Model list status */}
                     {modelListStatus[choice.provider] === 'ok' && modelLists[choice.provider] && (
-                      <span className="text-xs text-mint">
+                      <div className="text-mint">
                         已获取 {modelLists[choice.provider]!.length} 个模型
-                      </span>
+                      </div>
                     )}
                     {modelListStatus[choice.provider] === 'empty' && (
-                      <span className={cuNotice('info') + ' text-xs'}>
+                      <div className="text-white/50">
                         该提供商未提供模型列表，请手动输入模型名称
-                      </span>
+                      </div>
                     )}
                     {modelListStatus[choice.provider] === 'error' && (
-                      <span className={cuNotice('error') + ' text-xs'}>
+                      <div className="text-coral">
                         {testResults[`models_${choice.provider}`]?.error || '拉取失败'}
-                      </span>
+                      </div>
                     )}
                   </div>
-                  {isUnknownProvider && (
-                    <div className={cuNotice('warn') + ' text-xs flex items-center gap-2 mt-2'}>
-                      <span>还没有这个 provider：<code className="font-mono">{choice.provider}</code>。可以先到下方「自定义 Provider」把它建出来，或者直接保存——调用时会报错提示。</span>
-                      <button
-                        onClick={() => {
-                          setEditingProvider({
-                            id: choice.provider,
-                            label: '',
-                            baseUrl: '',
-                            format: 'openai',
-                            headers: {},
-                          })
-                          setProviderPreFillId(choice.provider)
-                        }}
-                        className={`${cuCtaGhost} px-2 py-1 text-xs whitespace-nowrap`}
-                      >
-                        补建这个 Provider
-                      </button>
-                    </div>
-                  )}
                 </div>
               )
             })}
           </div>
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="text-xl font-semibold text-white/90 mb-4">Provider 与密钥</h2>
-        <div className={cuNotice('info') + ' mb-4'}>
-          OpenCode Go 走的是本地网关（Anthropic 协议），必须带 x-opencode-session 头——已预置。它的模型列表不通过 API 暴露，请直接填模型名。经实测，填 claude-sonnet-4-6 会被路由到支持读图的视觉模型；其他名字可能被路由到不支持图片的模型。
-        </div>
-        <div className="space-y-4">
-          {config.providers.map((p) => {
-            const keyResult = testResults[`key_${p.id}`]
-            const hasKey = config.keysSet[p.id] ?? false
-            return (
-              <div key={p.id} className={cuCard({ tight: true })}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-3">
-                    <div className={`${cuIconBox} h-8 w-8`}>
-                      <Icon name="settings" className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="font-semibold text-white/90 text-sm">{p.label}</div>
-                      <div className="text-white/50 text-xs">{p.baseUrl}</div>
-                    </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/50">
-                      {p.format === 'anthropic' ? 'Anthropic 兼容' : 'OpenAI 兼容'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        hasKey ? 'bg-mint/20 text-mint' : 'bg-white/10 text-white/50'
-                      }`}
-                    >
-                      {hasKey ? '已配置' : '未配置'}
-                    </span>
-                    <button
-                      onClick={() =>
-                        setEditingProvider({
-                          id: p.id,
-                          label: p.label,
-                          baseUrl: p.baseUrl,
-                          format: p.format,
-                          headers: p.headers,
-                        })
-                      }
-                      className={`${cuCtaGhost} px-2 py-1 text-xs`}
-                      aria-label={`编辑 ${p.label}`}
-                    >
-                      <Icon name="edit" className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="password"
-                    value={providerKeys[p.id] ?? ''}
-                    onChange={(e) =>
-                      setProviderKeys((prev) => ({
-                        ...prev,
-                        [p.id]: e.target.value,
-                      }))
-                    }
-                    placeholder="输入 API Key"
-                    className="cu-input text-sm px-3 py-1.5 flex-1"
-                  />
-                  <button
-                    onClick={() => handleSaveKey(p.id)}
-                    disabled={!providerKeys[p.id] || savingKeyFor === p.id}
-                    className={`${cuCtaPrimary} px-4 py-1.5 text-xs`}
-                  >
-                    {savingKeyFor === p.id ? <Spinner label="" /> : '保存密钥'}
-                  </button>
-                  {hasKey && (
-                    <button
-                      onClick={() => handleRemoveKey(p.id)}
-                      className={`${cuCtaGhost} px-2 py-1 text-xs text-coral`}
-                      aria-label={`清除 ${p.label} 密钥`}
-                    >
-                      <Icon name="trash" className="h-4 w-4" />
-                      清除
-                    </button>
-                  )}
-                </div>
-                {keyResult?.error && (
-                  <div className={cuNotice('error') + ' mt-2 text-xs'}>
-                    {keyResult.error}
-                  </div>
-                )}
-                <p className="text-white/40 text-xs mt-2">
-                  密钥通过操作系统凭证库加密存储，不会在界面上回显
-                </p>
-              </div>
-            )
-          })}
-
-          <button
-            onClick={() =>
-              setEditingProvider({
-                id: '',
-                label: '',
-                baseUrl: '',
-                format: 'openai',
-                headers: {},
-              })
-            }
-            className={`${cuCtaGhost} px-4 py-2 text-sm`}
-          >
-            <Icon name="plus" className="h-4 w-4" />
-            添加 Provider
-          </button>
-
-          {editingProvider && (
-            <div id="provider-editor" className={cuCard({ tight: true }) + ' border-l-4 border-l-iris'}>
-              <h4 className="font-semibold text-white/90 text-sm mb-3">添加/编辑 Provider</h4>
-              <div className="space-y-3">
-                <input
-                  type="text"
-                  value={editingProvider.id}
-                  onChange={(e) =>
-                    setEditingProvider({ ...editingProvider, id: e.target.value })
-                  }
-                  placeholder="ID（如 my-provider）"
-                  className="cu-input text-sm px-3 py-1.5 w-full"
-                  data-field="id"
-                />
-                <input
-                  type="text"
-                  value={editingProvider.label}
-                  onChange={(e) =>
-                    setEditingProvider({ ...editingProvider, label: e.target.value })
-                  }
-                  placeholder="显示名称"
-                  className="cu-input text-sm px-3 py-1.5 w-full"
-                  data-field="label"
-                />
-                <input
-                  type="text"
-                  value={editingProvider.baseUrl}
-                  onChange={(e) =>
-                    setEditingProvider({ ...editingProvider, baseUrl: e.target.value })
-                  }
-                  placeholder="Base URL（如 https://api.example.com）"
-                  className="cu-input text-sm px-3 py-1.5 w-full"
-                  data-field="baseUrl"
-                />
-                <div>
-                  <label className="block text-white/70 text-xs mb-1">协议格式</label>
-                  <select
-                    value={editingProvider.format ?? 'openai'}
-                    onChange={(e) =>
-                      setEditingProvider({
-                        ...editingProvider,
-                        format: e.target.value as 'openai' | 'anthropic',
-                      })
-                    }
-                    className="cu-input text-sm px-3 py-1.5 w-full"
-                  >
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="anthropic">Anthropic 兼容</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-white/70 text-xs mb-1">附加请求头</label>
-                  <textarea
-                    value={formatHeaders(editingProvider.headers)}
-                    onChange={(e) =>
-                      setEditingProvider({
-                        ...editingProvider,
-                        headers: parseHeaders(e.target.value),
-                      })
-                    }
-                    placeholder="Key: Value（每行一个，如 x-opencode-session: xxx）"
-                    className="cu-textarea text-sm px-3 py-1.5 w-full h-20"
-                  />
-                  <p className="text-white/40 text-xs mt-1">
-                    格式：Key: Value（每行一个，空行和无效行会被忽略）
-                  </p>
-                </div>
-                <div className={cuNotice('info') + ' text-xs'}>
-                  <p className="mb-1">
-                    <strong>openai</strong> 格式：聊天走 baseUrl/chat/completions，模型列表走 baseUrl/models
-                  </p>
-                  <p>
-                    <strong>anthropic</strong> 格式：聊天走 baseUrl/v1/messages，模型列表走 baseUrl/v1/models
-                  </p>
-                  <p className="mt-1 text-white/40">
-                    所以有的厂商 baseUrl 要带 /v1，有的不要。
-                  </p>
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSaveProvider}
-                    disabled={!editingProvider.id || !editingProvider.baseUrl}
-                    className={`${cuCtaPrimary} px-4 py-1.5 text-xs`}
-                  >
-                    保存
-                  </button>
-                  <button
-                    onClick={() => setEditingProvider(null)}
-                    className={`${cuCtaGhost} px-4 py-1.5 text-xs`}
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </section>
 

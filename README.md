@@ -98,7 +98,11 @@ provider 的 id、baseUrl、协议格式、请求头全部自由填写，填错�
 「拉取模型」按钮会向厂商要模型清单；对方不提供时（例如 OpenCode Go 只在 TUI 里列模型）
 会明确告诉你手动填，而不是装作坏了。
 
-内置预置：OpenCode Go / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动（仅作示例）。
+内置预置：OpenCode Go / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动（**仅作示例，不是白名单**）。
+
+**默认四个功能都指向 OpenCode Go 的 `claude-sonnet-4-6`**，这样只配一把 key 就能全跑通。
+那个看着不相干的模型名是**网关侧的别名**——OpenCode Go 按模型名决定路由，实测只有它会被路由到
+支持读图的模型。换成别的 provider / 模型随时可在设置页改。
 
 ### OpenCode Go（本地网关）
 

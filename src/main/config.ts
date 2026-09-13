@@ -32,17 +32,26 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: 'siliconflow', label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1' }
 ]
 
+/**
+ * 默认模型选择。
+ *
+ * ⚠ 这里之所以是 `claude-sonnet-4-6` 这种看着不相干的模型名：OpenCode Go 网关是
+ * **按模型名决定路由**的，实测只有这个名字会被路由到支持读图的视觉模型；填别的
+ * （gpt-4o / qwen-vl-max / glm-4v / deepseek-flash…）会落到看不到图的模型上。
+ * 换句话说这是个网关侧的别名，不是我们真的在调 Claude。
+ */
 const DEFAULT_CHOICE: ModelChoice = {
-  provider: 'deepseek',
-  model: 'deepseek-flash',
+  provider: 'opencode-go',
+  model: 'claude-sonnet-4-6',
   vision: true
 }
 
+// 四个功能默认走同一个 provider / 模型，用户只配一把 key 就能全跑通
 const DEFAULT_FEATURES: Partial<Record<FeatureKey, ModelChoice>> = {
   capture: { ...DEFAULT_CHOICE },
-  analyze: { provider: 'deepseek', model: 'deepseek-flash' },
-  generate: { provider: 'deepseek', model: 'deepseek-flash' },
-  forecast: { provider: 'deepseek', model: 'deepseek-flash' }
+  analyze: { ...DEFAULT_CHOICE },
+  generate: { ...DEFAULT_CHOICE },
+  forecast: { ...DEFAULT_CHOICE }
 }
 
 /**
