@@ -33,6 +33,12 @@ export default function App(): React.JSX.Element {
   /* ── 从考点跳转到复习的初始范围 ────────────────────── */
   const [pendingReviewScope, setPendingReviewScope] = useState<ListFilter | null>(null)
 
+  /* ── 统计页跳转到复习 ── */
+  const handleNavigateReview = useCallback((scope: ListFilter) => {
+    setPendingReviewScope(scope)
+    setPage('review')
+  }, [])
+
   /* ── 启动时读取热键 ── */
   useEffect(() => {
     void window.api.settingsGet().then((r) => {
@@ -409,7 +415,7 @@ export default function App(): React.JSX.Element {
               initialScope={pendingReviewScope ?? undefined}
             />
           )}
-          {page === 'stats' && <Stats />}
+          {page === 'stats' && <Stats onNavigateReview={handleNavigateReview} />}
           {page === 'forecast' && <Forecast onStudyPoint={handleStudyPoint} />}
           {page === 'settings' && <Settings />}
         </div>

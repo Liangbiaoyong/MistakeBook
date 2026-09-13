@@ -59,6 +59,34 @@ export function formatDateTime(iso: string): string {
 }
 
 /**
+ * 格式化 ISO 日期为「M月D日」格式
+ * 例：2026-09-16 → 9月16日
+ */
+export function formatMonthDay(iso: string): string {
+  try {
+    const d = new Date(iso)
+    const month = d.getMonth() + 1
+    const day = d.getDate()
+    return `${month}月${day}日`
+  } catch {
+    return iso
+  }
+}
+
+/**
+ * 判断两个 ISO 日期字符串是否为同一天（忽略时间）
+ */
+export function isSameDay(a: string, b: string): boolean {
+  const da = new Date(a)
+  const db = new Date(b)
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  )
+}
+
+/**
  * 状态文本标签
  */
 export function statusLabel(s: Status): string {

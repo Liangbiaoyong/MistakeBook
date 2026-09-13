@@ -99,6 +99,10 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
   const [variants, setVariants] = useState<string[]>([])
   const [generating, setGenerating] = useState(false)
 
+  /* ── 导出 ──────────────────────────────────────── */
+  const [exporting, setExporting] = useState(false)
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null)
+
   /* ── 数据获取（防抖 + 序列号防过期） ── */
   const seqRef = useRef(0)
 
@@ -205,6 +209,26 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
     setQ('')
   }
 
+  /* ── 导出当前筛选 ── */
+  const handleExport = async () => {
+    if (exporting) return
+    setExporting(true)
+    setExportFeedback(null)
+    const result = await window.api.exportMarkdown(filter)
+    setExporting(false)
+    if (result.ok && result.data) {
+      if (result.data.canceled) {
+        // 用户取消了，不显示任何提示
+      } else if (result.data.count > 0) {
+        setExportFeedback(`已导出 ${result.data.count} 道到 ${result.data.path}`)
+        setTimeout(() => setExportFeedback(null), 4000)
+      }
+    } else {
+      setExportFeedback(result.error ?? '导出失败')
+      setTimeout(() => setExportFeedback(null), 4000)
+    }
+  }
+
   /* ── 渲染 ──────────────────────────────────────── */
   return (
     <div className="cu-enter">
@@ -212,12 +236,30 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
         title="书库"
         subtitle={isFiltering ? `筛选出 ${items.length} 题` : `共 ${items.length} 题`}
         actions={
-          <button type="button" onClick={onCapture} className={`${cuCtaPrimary} !px-4 !py-2 text-sm`}>
-            <Icon name="camera" className="h-4 w-4" />
-            截图录入
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void handleExport()}
+              disabled={exporting}
+              className={`${cuCtaGhost} !px-4 !py-2 text-sm ${exporting ? 'opacity-60' : ''}`}
+            >
+              <Icon name="export" className="h-4 w-4" />
+              导出
+            </button>
+            <button type="button" onClick={onCapture} className={`${cuCtaPrimary} !px-4 !py-2 text-sm`}>
+              <Icon name="camera" className="h-4 w-4" />
+              截图录入
+            </button>
+          </div>
         }
       />
+
+      {/* 导出反馈 */}
+      {exportFeedback && (
+        <div className={`${cuNotice('info')} mb-4`}>
+          {exportFeedback}
+        </div>
+      )}
 
       {/* ── 筛选栏 ────────────────────────────────────── */}
       <div className="mb-6 flex flex-wrap items-center gap-3">

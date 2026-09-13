@@ -6,6 +6,7 @@ import Markdown from '../components/Markdown'
 import { Icon, cuCard, cuCtaPrimary, cuCtaGhost, cuNotice } from '../design/tokens'
 import type { MistakeSummary, Mistake, Grade, ReviewQuery, ReviewBatch, ListFilter, ErrorType, ReviewMode, ReviewOrder } from '@shared/types'
 import { GRADES, ERROR_TYPES, QUESTION_TYPES, STATUSES, REVIEW_ORDERS, REVIEW_MODES } from '@shared/types'
+import { formatMonthDay, isSameDay } from '../lib/format'
 
 const GRADE_INFO: Record<Grade, { label: string; color: string; key: string }> = {
   again: { label: '忘了', color: 'bg-coral hover:bg-coral/80', key: '1' },
@@ -50,6 +51,9 @@ export default function Review({ initialScope }: ReviewProps) {
   /* ── UI 状态 ─────────────────────────────────────────── */
   const [filtersExpanded, setFiltersExpanded] = useState(true)
   const [pendingQuery, setPendingQuery] = useState<ReviewQuery | null>(null)
+  const [gradeFeedback, setGradeFeedback] = useState<string | null>(null)
+  const [generatingVariant, setGeneratingVariant] = useState(false)
+  const [variantMarkdown, setVariantMarkdown] = useState<string | null>(null)
 
   const detailCache = useRef(new Map<string, Mistake>())
   const [detail, setDetail] = useState<Mistake | null>(null)
@@ -215,13 +219,50 @@ export default function Review({ initialScope }: ReviewProps) {
       setError(result.error ?? '评分失败')
       return
     }
+
+    // 显示下次复习反馈
+    const reviewState = result.data
+    if (reviewState) {
+      const today = new Date().toISOString()
+      if (!reviewState.next) {
+        setGradeFeedback('已记录')
+      } else if (isSameDay(reviewState.next, today)) {
+        setGradeFeedback('今天还要再看一遍')
+      } else {
+        setGradeFeedback(`下次复习：${formatMonthDay(reviewState.next)}`)
+      }
+      // 2秒后自动隐藏
+      setTimeout(() => setGradeFeedback(null), 2000)
+    }
+
     setShowAnswer(false)
     setCurrentIndex((prev) => prev + 1)
   }, [grading, currentIndex, items])
 
   const handleRevealAnswer = useCallback(() => {
     setShowAnswer(true)
+    // 切换题目时清除变式内容
+    setVariantMarkdown(null)
+    setGeneratingVariant(false)
   }, [])
+
+  /* ── 详情获取 ────────────────────────────────────────────── */
+  const currentItem = items[currentIndex]
+  const currentId = currentItem?.id
+
+  const handleGenerateVariant = useCallback(async () => {
+    if (!currentId || generatingVariant) return
+    setGeneratingVariant(true)
+    setVariantMarkdown(null)
+    const result = await window.api.variants(currentId)
+    setGeneratingVariant(false)
+    if (result.ok) {
+      setVariantMarkdown(result.data ?? null)
+    } else {
+      setGradeFeedback(result.error ?? '生成变式失败')
+      setTimeout(() => setGradeFeedback(null), 2000)
+    }
+  }, [currentId, generatingVariant])
 
   useEffect(() => {
     if (loading || items.length === 0) return
@@ -258,10 +299,6 @@ export default function Review({ initialScope }: ReviewProps) {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [loading, items.length, currentIndex, showAnswer, grading, handleGrade, handleRevealAnswer, nextBatch])
-
-  /* ── 详情获取 ────────────────────────────────────────────── */
-  const currentItem = items[currentIndex]
-  const currentId = currentItem?.id
 
   useEffect(() => {
     if (!currentId) {
@@ -655,6 +692,29 @@ export default function Review({ initialScope }: ReviewProps) {
                 </div>
               )}
 
+              {/* 生成变式区域 */}
+              <div className="border-t border-white/10 pt-4">
+                <button
+                  onClick={() => void handleGenerateVariant()}
+                  disabled={generatingVariant}
+                  className={`${cuCtaGhost} w-full py-2 text-sm ${generatingVariant ? 'opacity-60' : ''}`}
+                >
+                  {generatingVariant ? (
+                    <Spinner label="生成中..." />
+                  ) : (
+                    <>
+                      <Icon name="refresh" className="h-4 w-4 mr-2" />
+                      生成变式
+                    </>
+                  )}
+                </button>
+                {variantMarkdown && (
+                  <div className="mt-4 cu-prose bg-white/5 rounded-xl p-4 border border-white/10">
+                    <Markdown source={variantMarkdown} />
+                  </div>
+                )}
+              </div>
+
               <div className="flex gap-3 pt-4">
                 {Object.entries(GRADE_INFO).map(([grade, info]) => (
                   <button
@@ -672,6 +732,13 @@ export default function Review({ initialScope }: ReviewProps) {
               <p className="text-center text-[11px] text-white/30 pt-1">
                 1 忘了 / 2 困难 / 3 良好 / 4 简单 · ← 返回上一题 · R 换一批
               </p>
+            </div>
+          )}
+
+          {/* 评分后下次复习反馈（在条件块外） */}
+          {gradeFeedback && (
+            <div className={`${cuNotice('info')} text-center font-medium mt-4 animate-fade-in`}>
+              {gradeFeedback}
             </div>
           )}
         </div>

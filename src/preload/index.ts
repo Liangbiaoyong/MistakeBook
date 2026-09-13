@@ -27,6 +27,7 @@ const api: Api = {
   get: (id) => ipcRenderer.invoke(IPC.mistakeGet, id),
   update: (id, patch) => ipcRenderer.invoke(IPC.mistakeUpdate, id, patch),
   remove: (id) => ipcRenderer.invoke(IPC.mistakeDelete, id),
+  exportMarkdown: (filter) => ipcRenderer.invoke(IPC.mistakeExport, filter),
 
   reviewQuery: (query) => ipcRenderer.invoke(IPC.reviewQuery, query),
   grade: (id, grade) => ipcRenderer.invoke(IPC.reviewGrade, id, grade),

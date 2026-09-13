@@ -403,6 +403,64 @@ function registerHandlers(): void {
     return null
   })
 
+  /**
+   * 按当前筛选导出一份 Markdown。
+   * 场景：考前想打印出来看（尤其数学），或者在别的设备上翻。
+   */
+  handle(IPC.mistakeExport, async (filter: ListFilter | undefined) => {
+    const summaries = await listMistakes(filter ?? {})
+    if (summaries.length === 0) throw new Error('当前筛选下没有可导出的错题。')
+
+    const now = new Date()
+    const parts: string[] = [
+      '# 错题导出',
+      '',
+      `导出时间：${now.toLocaleString('zh-CN')}　·　共 ${summaries.length} 道`,
+      ''
+    ]
+
+    let n = 0
+    for (const s of summaries) {
+      const m = await readMistake(s.id)
+      if (!m) continue
+      n++
+      const title = [m.subject, ...(m.points.length ? m.points : m.chapter)].filter(Boolean).join(' · ')
+      parts.push(`## ${n}. ${title}`, '')
+
+      const meta: string[] = []
+      if (m.type) meta.push(`题型：${m.type}`)
+      if (m.errorType) meta.push(`错因：${m.errorType}`)
+      if (m.level) meta.push(`难度：${m.level}/5`)
+      if (m.myAnswer) meta.push(`我的答案：${m.myAnswer}`)
+      if (m.rightAnswer) meta.push(`正确答案：${m.rightAnswer}`)
+      if (m.source) meta.push(`来源：${m.source}`)
+      if (meta.length) parts.push(meta.join('　|　'), '')
+
+      if (m.body.question) parts.push(m.body.question, '')
+      if (m.body.myThought) parts.push('**我的思路**', '', m.body.myThought, '')
+      if (m.body.solution) parts.push('**正确解法**', '', m.body.solution, '')
+      if (m.body.cause) parts.push('**当时为什么错**', '', m.body.cause, '')
+      parts.push('---', '')
+    }
+
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const opts = {
+      title: '导出错题',
+      defaultPath: `错题导出-${stamp}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    }
+    const res =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showSaveDialog(mainWindow, opts)
+        : await dialog.showSaveDialog(opts)
+
+    if (res.canceled || !res.filePath) return { path: '', count: 0, canceled: true }
+
+    await fs.promises.writeFile(res.filePath, parts.join('\n'), 'utf8')
+    logLine('export', `导出 ${n} 道错题 → ${res.filePath}`)
+    return { path: res.filePath, count: n, canceled: false }
+  })
+
   handle(IPC.reviewQuery, async (q: ReviewQuery): Promise<ReviewBatch> => {
     // 「再做一遍这一批」：直接按给定 id 顺序取。
     // 那批题刚评过分、next 已经推到未来，用 mode:'due' 重查只会拿到 0 条 ——
@@ -467,8 +525,11 @@ function registerHandlers(): void {
   handle(IPC.reviewGrade, async (id: string, grade: Grade) => {
     const m = await readMistake(id)
     if (!m) throw new Error(`找不到错题 ${id}`)
-    await updateMistake(id, { review: nextReview(m.review, grade, getSettings().examDate) })
-    return null
+    const review = nextReview(m.review, grade, getSettings().examDate)
+    await updateMistake(id, { review })
+    // 把新的复习状态返回给界面 —— 这样才能显示「下次复习：9月16日」，
+    // 让调度从黑箱变成看得见的东西
+    return review
   })
 
   handle(IPC.statsOverview, () => {

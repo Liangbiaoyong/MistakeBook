@@ -5,9 +5,13 @@ import Empty from '../components/Empty'
 import Spinner from '../components/Spinner'
 import Markdown from '../components/Markdown'
 import { Icon, cuCard, cuIconBox, cuCtaPrimary, cuNotice } from '../design/tokens'
-import type { StatsOverview } from '@shared/types'
+import type { StatsOverview, ListFilter } from '@shared/types'
 
-export default function Stats() {
+interface StatsProps {
+  onNavigateReview?: (scope: ListFilter) => void
+}
+
+export default function Stats({ onNavigateReview }: StatsProps) {
   const [stats, setStats] = useState<StatsOverview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -133,6 +137,12 @@ export default function Stats() {
             },
           ],
         })
+        // 点击某一条 → 跳转复习
+        chart.on('click', (params: { name?: string }) => {
+          if (onNavigateReview && params.name) {
+            onNavigateReview({ errorType: params.name as ListFilter['errorType'] })
+          }
+        })
       }
 
       if (pointChartRef.current && stats.byPoint.length > 0) {
@@ -163,6 +173,12 @@ export default function Stats() {
                 .reverse(),
             },
           ],
+        })
+        // 点击某一条 → 跳转复习
+        chart.on('click', (params: { name?: string }) => {
+          if (onNavigateReview && params.name) {
+            onNavigateReview({ point: params.name })
+          }
         })
       }
     }
@@ -275,14 +291,24 @@ export default function Stats() {
         {stats.byErrorType.length > 0 && (
           <div className={cuCard({ tight: true })}>
             <h3 className="font-semibold text-white/90 mb-4">按错因</h3>
-            <div ref={errorTypeChartRef} className="h-48" />
+            <div ref={errorTypeChartRef} className="h-48 cursor-pointer" />
+            {onNavigateReview && (
+              <p className="text-center text-[11px] text-white/30 mt-2">
+                点击条目可直接复习这一类
+              </p>
+            )}
           </div>
         )}
 
         {stats.byPoint.length > 0 && (
           <div className={cuCard({ tight: true })}>
             <h3 className="font-semibold text-white/90 mb-4">最常错知识点 Top 10</h3>
-            <div ref={pointChartRef} className="h-48" />
+            <div ref={pointChartRef} className="h-48 cursor-pointer" />
+            {onNavigateReview && (
+              <p className="text-center text-[11px] text-white/30 mt-2">
+                点击条目可直接复习这一知识点
+              </p>
+            )}
           </div>
         )}
       </div>

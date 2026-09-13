@@ -20,6 +20,7 @@ import type {
   Result,
   ReviewBatch,
   ReviewQuery,
+  ReviewState,
   StatsOverview,
   TopicRank
 } from './types'
@@ -42,6 +43,8 @@ export const IPC = {
   mistakeGet: 'mistake:get',
   mistakeUpdate: 'mistake:update',
   mistakeDelete: 'mistake:delete',
+  /** 按当前筛选导出为一份 Markdown（考前打印/别的设备上翻） */
+  mistakeExport: 'mistake:export',
 
   reviewQuery: 'review:query',
   reviewGrade: 'review:grade',
@@ -107,10 +110,12 @@ export interface Api {
   get(id: string): Promise<Result<Mistake>>
   update(id: string, patch: Partial<Mistake>): Promise<Result<null>>
   remove(id: string): Promise<Result<null>>
+  /** 导出当前筛选下的错题为 Markdown；返回落盘路径与条数（取消时 count=0） */
+  exportMarkdown(filter?: ListFilter): Promise<Result<{ path: string; count: number; canceled: boolean }>>
 
   /** 按范围 / 模式 / 顺序 / 批次取一组复习题目（「换一批」靠 offset 前进） */
   reviewQuery(query: ReviewQuery): Promise<Result<ReviewBatch>>
-  grade(id: string, grade: Grade): Promise<Result<null>>
+  grade(id: string, grade: Grade): Promise<Result<ReviewState>>
 
   stats(): Promise<Result<StatsOverview>>
   errorPatterns(filter?: ListFilter): Promise<Result<string>>

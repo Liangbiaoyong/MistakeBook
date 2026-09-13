@@ -58,7 +58,12 @@ ipcMain.handle('review:query', (_e, q) => {
   }
   return ok(pageOf(q?.offset ?? 0, q?.limit ?? 0))
 })
-ipcMain.handle('review:grade', () => ok(null))
+// 更新 stub：返回真实的 ReviewState，而不是 null
+ipcMain.handle('review:grade', () => ok({
+  last: '2026-09-14',
+  next: '2026-09-16',
+  round: 2
+}))
 ipcMain.handle('mistake:get', (_e, id) => {
   const s = ALL.find((x) => x.id === id)
   return s ? ok({ ...s, body: { question: s.questionHead, myAnswer: 'A', rightAnswer: 'B' } }) : fail('not found')
@@ -134,6 +139,15 @@ app.whenReady().then(async () => {
   const afterSpace = await bodyText()
   console.log('[review] 空格显示答案：', afterSpace.includes('我的答案') ? '✓' : '✗')
 
+  // 评分：按 3（良好），检查是否显示下次复习反馈
+  await js(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'3',bubbles:true}))`)
+  await wait(1200)
+  const afterGrade = await bodyText()
+  const hasNextReview = afterGrade.includes('下次复习')
+  const hasCorrectFormat = /下次复习：\d+月\d+日/.test(afterGrade)
+  console.log('[review] 评分后显示下次复习反馈：', hasNextReview ? '✓' : '✗')
+  console.log('[review] 日期格式为「M月D日」：', hasCorrectFormat ? '✓' : '✗')
+
   // 做完这一批 → 应出现完成态 → 「再做一遍这批」应把同一批带回来
   // （这是用户报的 bug：做完后显示 0 题且不让重做）
   for (let i = 0; i < 20; i++) {
@@ -177,6 +191,8 @@ app.whenReady().then(async () => {
     batch2.includes('第21题') &&
     batch1 !== batch2 &&
     afterSpace.includes('我的答案') &&
+    hasNextReview &&
+    hasCorrectFormat &&
     wrapped &&
     sawDone &&
     redoClicked &&
