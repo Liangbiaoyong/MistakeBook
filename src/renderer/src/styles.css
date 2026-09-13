@@ -1,0 +1,236 @@
+@import 'tailwindcss';
+
+/* ─────────────────────────────────────────────────────────────
+   设计基调源自「Fullscreen Hero（全屏英雄区）」风格包：
+   暗底 / 白字 / 玻璃卡片 / 胶囊控件。
+   错题本是数据密集型应用，密集页面沿用其色彩与材质语言，
+   但收紧间距与字号刻度——这不算风格漂移。
+   ───────────────────────────────────────────────────────────── */
+
+@theme {
+  /* 字体：全部使用系统自带，不依赖网络（CSP 禁外链字体）。
+     刻意避开 Inter / Roboto / Geist 这三个被用滥的默认选择。 */
+  --font-display: 'Bahnschrift', 'Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, 'Microsoft YaHei', monospace;
+
+  /* 风格包指定的强调色 */
+  --color-coral: #ff6b6b;
+  --color-mint: #4ecdc4;
+  --color-sun: #ffe66d;
+  --color-iris: #6c5ce7;
+
+  /* 交互时长统一 200ms */
+  --ease-cuoti: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-black text-white font-sans antialiased;
+    overflow: hidden; /* 桌面应用：滚动交给内部容器 */
+  }
+
+  /* 键盘可达性：所有可交互元素都要有清晰焦点环 */
+  :focus-visible {
+    @apply outline-none ring-2 ring-white/80 ring-offset-2 ring-offset-black;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-coral) 45%, transparent);
+  }
+
+  /* 暗色滚动条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.18) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgb(255 255 255 / 0.16);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgb(255 255 255 / 0.28);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* ── 玻璃卡片（风格包强制 token） ── */
+  .cu-card {
+    @apply bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20;
+  }
+
+  /* 密集场景下更紧凑的卡片变体：材质不变，只改密度 */
+  .cu-card-tight {
+    @apply bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20 p-5;
+  }
+
+  /* ── 胶囊按钮（风格包强制：rounded-full + active:scale-[0.98]） ──
+     Tailwind v4 不允许 @apply 自定义类，所以基础样式用共享选择器下发，
+     而不是让 .cu-btn-primary 去 @apply .cu-btn。 */
+  .cu-btn,
+  .cu-btn-primary,
+  .cu-btn-ghost,
+  .cu-btn-sm {
+    @apply inline-flex items-center justify-center gap-2 rounded-full font-semibold
+           transition-all duration-200 select-none cursor-pointer
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:pointer-events-none;
+  }
+  /* 主按钮：白底黑字（对比度最高） */
+  .cu-btn-primary {
+    @apply bg-white text-black px-6 py-3;
+  }
+  /* 次按钮：透明底白字白边 */
+  .cu-btn-ghost {
+    @apply bg-transparent text-white border-2 border-white px-6 py-3 hover:bg-white/10;
+  }
+  /* 小尺寸，用于密集工具条 */
+  .cu-btn-sm {
+    @apply px-3.5 py-1.5 text-sm;
+  }
+
+  /* ── 输入（风格包强制 token） ── */
+  .cu-input {
+    @apply bg-white/10 backdrop-blur-sm border border-white/30 rounded-full
+           text-white placeholder-white/60 px-4 py-2.5
+           focus:outline-none focus:ring-2 focus:ring-white/50
+           transition-colors duration-200;
+  }
+  /* 多行输入用圆角矩形而非胶囊 */
+  .cu-textarea {
+    @apply bg-white/10 backdrop-blur-sm border border-white/30 rounded-2xl
+           text-white placeholder-white/60 px-4 py-3
+           focus:outline-none focus:ring-2 focus:ring-white/50
+           transition-colors duration-200 resize-y;
+  }
+
+  .cu-chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/25
+           bg-white/5 px-3 py-1 text-xs text-white/80;
+  }
+
+  .cu-divider {
+    @apply border-t border-white/10;
+  }
+}
+
+/* ── Markdown / 题目渲染区（暗底高对比） ── */
+.cu-prose {
+  @apply text-white/90 leading-relaxed;
+  font-size: 0.9375rem;
+}
+.cu-prose > * + * {
+  margin-top: 0.75rem;
+}
+.cu-prose h1,
+.cu-prose h2,
+.cu-prose h3 {
+  @apply font-display font-bold text-white;
+  margin-top: 1.25rem;
+  line-height: 1.3;
+}
+.cu-prose h2 {
+  font-size: 1.25rem;
+}
+.cu-prose h3 {
+  font-size: 1.0625rem;
+}
+.cu-prose code {
+  @apply font-mono rounded px-1.5 py-0.5 text-[0.85em];
+  background: rgb(255 255 255 / 0.12);
+}
+.cu-prose pre {
+  @apply rounded-2xl border border-white/15 p-4 overflow-x-auto font-mono text-[0.85rem];
+  background: rgb(0 0 0 / 0.45);
+}
+.cu-prose pre code {
+  background: transparent;
+  padding: 0;
+}
+.cu-prose a {
+  @apply underline decoration-white/40 underline-offset-2 hover:decoration-white;
+}
+.cu-prose ul,
+.cu-prose ol {
+  padding-left: 1.25rem;
+}
+.cu-prose ul {
+  list-style: disc;
+}
+.cu-prose ol {
+  list-style: decimal;
+}
+.cu-prose li + li {
+  margin-top: 0.25rem;
+}
+.cu-prose blockquote {
+  @apply border-l-2 border-white/30 pl-4 text-white/70;
+}
+.cu-prose table {
+  @apply w-full border-collapse text-sm;
+}
+.cu-prose th,
+.cu-prose td {
+  @apply border border-white/15 px-3 py-1.5 text-left;
+}
+.cu-prose th {
+  @apply bg-white/5 font-semibold;
+}
+.cu-prose hr {
+  @apply border-white/15;
+}
+
+/* KaTeX 在暗底下的可读性修正 */
+.cu-prose .katex,
+.cu-prose .katex-display {
+  color: #fff;
+}
+.cu-prose .katex-display {
+  @apply my-3 overflow-x-auto overflow-y-hidden py-1;
+}
+
+/* ── 动效降级：尊重系统偏好 ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* 页面切换的轻量淡入（无弹跳曲线） */
+@keyframes cu-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.cu-enter {
+  animation: cu-fade-in 200ms var(--ease-cuoti) both;
+}

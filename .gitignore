@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+release/
+build/
+.vite/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+*.local
+.env
+.env.*
+!.env.example
+
+# 运行期数据（默认写在用户文档目录，这里兜底忽略）
+.kaoyan/

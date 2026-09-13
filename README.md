@@ -1,0 +1,121 @@
+# MistakeBook · 错题本
+
+> 截图即录，大模型理解，Markdown 沉淀 —— 一个给自己用的 AI 错题本。
+
+按一下热键，框选一道做错的题，剩下的交给它：识别题干与选项、把公式转成 LaTeX、归档成一篇 Markdown，
+再据此算出你该复习什么、薄弱在哪、哪些考点最值钱。
+
+为 **2027 考研（22408：政治 / 英语二 / 数学二 / 408）** 而写，但科目、错因、考试日期全部可配置，
+换成任何考试都能用。
+
+---
+
+## 为什么不用现成的
+
+| | |
+|---|---|
+| 通用笔记软件 | 没有「从错题出发」的复习调度，也不认手写与公式 |
+| 成熟的背单词 / 刷题 App | 是题库思维，不是**你自己的错题**思维 |
+| 现成的开源错题本 | 截至 2026-09 检索，**没有**一个把「全局热键 + 视觉大模型 + Markdown 庫 + SQLite 索引」做进同一个桌面应用的 |
+
+## 功能
+
+**录入**
+- 全局热键框选截图（默认 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd>）
+- 视觉大模型识别：科目 / 章节 / 知识点 / 题型 / 难度 / 我的答案 / 正确答案 / 错因
+- **公式一律转 LaTeX**（`$...$` 行内、`$$...$$` 块级）
+- 模型置信度低时**强制人工核对**，不假装准确
+- 原图永久保留 —— 换更好的模型可以重新识别
+
+**沉淀**
+- 一道错题一篇 Markdown，带 YAML frontmatter
+- 图片单独存放，只增不改
+- **文件是唯一真相源**，SQLite 只是可随时重建的索引
+
+**复习**
+- 到期队列 + 四档评分
+- **带考试日期的调度**：间隔有上限，且绝不排到考试之后
+
+**分析**
+- 分布统计（科目 / 错因 / 知识点 / 每日新增）
+- **错因归纳**：让模型读你自己的错题，指出反复出错的模式
+- **高频考点排行**：依据你的错题分布推算 —— 是「排优先级」，不是「押题」
+
+**出题**
+- 同知识点的变式题（换数值 / 换问法 / 反向问）
+
+## 技术栈
+
+Electron 44 · React 19 · TypeScript 7 · Tailwind CSS 4 · Vite 7 · KaTeX · ECharts · `node:sqlite`
+
+**零原生依赖** —— SQLite 用 Electron 内置的 `node:sqlite`，不需要编译任何 native 模块。
+
+## 存储结构
+
+```
+<仓库目录>/                      # 默认 <文档>/MistakeBook
+├── mistakes/<科目>/<章节>/<id>.md
+└── assets/<id>.png             # 原始截图
+```
+
+`<id>` 形如 `2026-09-13-a3f29c`（6 位随机 hex，生成时必须查重，否则会覆盖已有错题）。索引与配置放在 Electron 的 `userData` 目录，**API Key 用系统凭据库加密存储**。
+
+## 快速开始
+
+```bash
+npm install
+npm run dev
+```
+
+打包：
+
+```bash
+npm run dist
+```
+
+## 配置模型
+
+设置页支持 **全局默认 + 按功能覆盖**，每个功能可独立指定 provider 与模型：
+
+| 功能 | 要求 |
+|---|---|
+| 采集识别 | **必须支持读图** |
+| 错因分析 / 变式出题 / 考点排行 | 纯文本即可 |
+
+内置 DeepSeek / 通义千问 / 智谱 / 硅基流动四个 OpenAI 兼容 provider，也可自行添加。
+
+> **默认模型 `deepseek-flash`**：2026-09 实测其官方 API 支持图片输入。
+> ⚠ 图片按尺寸折算 token，单张上限约 1024 —— 所以**截图要裁紧，只截一道题**。
+
+## 目录结构
+
+```
+src/
+  main/        Electron 主进程
+    capture/   全屏框选截图 + 全局热键
+    llm/       OpenAI 兼容客户端、提示词、Zod 校验
+    store/     vault 读写（frontmatter + Markdown + 图片）、SQLite 索引
+    features/  错因分析 / 变式出题 / 考点排行
+    review.ts  带考试日期的复习调度
+  preload/     contextBridge 暴露的 window.api
+  renderer/    React 界面
+  shared/      主进程与渲染进程共用的类型与 IPC 契约
+docs/
+  specs/       设计文档
+tests/         单元测试
+```
+
+## 开发
+
+```bash
+npm run dev        # 开发模式
+npm test           # 单元测试
+npm run typecheck  # 类型检查
+```
+
+架构与设计决策见 [`docs/specs/2026-09-13-mistakebook-design.md`](docs/specs/2026-09-13-mistakebook-design.md)。
+变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+
+## 许可
+
+MIT
