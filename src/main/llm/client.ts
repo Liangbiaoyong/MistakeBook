@@ -162,7 +162,12 @@ interface Resolved {
 
 function resolve(choice: ModelChoice): Resolved {
   const provider = getProviderById(choice.provider)
-  if (!provider) throw new Error(`未知的 provider：${choice.provider}`)
+  if (!provider) {
+    // provider 不限于预置的那几个，用户可自由填；这里要说清怎么补，而不是干巴巴地报「未知」
+    throw new Error(
+      `还没配置名为「${choice.provider}」的 provider。请到「设置」把它补出来（填 id、baseUrl，可选协议格式与请求头），或改用一个已存在的 provider。`
+    )
+  }
   const apiKey = getProviderKey(choice.provider)
   if (!apiKey) throw new MissingKeyError(choice.provider)
   return { provider, apiKey, transport: transportFor(provider.format) }
@@ -339,7 +344,9 @@ export async function chatVisionJSON<T>(o: {
 /** 拉取模型列表。厂商支持就返回，不支持时抛错（由调用方展示原因） */
 export async function listModels(providerId: string): Promise<ModelInfo[]> {
   const provider = getProviderById(providerId)
-  if (!provider) throw new Error(`未知的 provider：${providerId}`)
+  if (!provider) {
+    throw new Error(`还没配置名为「${providerId}」的 provider，先在「设置」里把它补出来。`)
+  }
   const apiKey = getProviderKey(providerId)
   if (!apiKey) throw new MissingKeyError(providerId)
 

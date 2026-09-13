@@ -32,6 +32,7 @@ export default function Settings() {
   const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
   const [modelLists, setModelLists] = useState<Record<string, ModelInfo[]>>({})
   const [modelListStatus, setModelListStatus] = useState<Record<string, string | null>>({})
+  const [providerPreFillId, setProviderPreFillId] = useState<string | null>(null)
 
   const loadConfig = useCallback(async () => {
     setLoading(true)
@@ -73,6 +74,21 @@ export default function Settings() {
   useEffect(() => {
     loadConfig()
   }, [loadConfig])
+
+  // Scroll to and focus provider editor when pre-filling
+  useEffect(() => {
+    if (editingProvider && providerPreFillId) {
+      const editor = document.getElementById('provider-editor')
+      if (editor) {
+        editor.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        // Focus the baseUrl input after scroll
+        setTimeout(() => {
+          const baseUrlInput = editor.querySelector<HTMLInputElement>('[data-field="baseUrl"]')
+          baseUrlInput?.focus()
+        }, 300)
+      }
+    }
+  }, [editingProvider, providerPreFillId])
 
   const handleTest = async (key: string, choice: ModelChoice) => {
     setTestingKey(key)
@@ -221,120 +237,143 @@ export default function Settings() {
       {error && <div className={cuNotice('error') + ' mb-6'}>{error}</div>}
 
       <section className="mb-10">
-        <h2 className="text-xl font-semibold text-white/90 mb-4">模型配置</h2>
+        <h2 className="text-xl font-semibold text-white/90 mb-2">模型配置</h2>
+        <p className="text-white/50 text-xs mb-4">Provider 不限于预置的几个：任意填 id 即可，再按需补上 baseUrl / 协议格式 / 请求头。</p>
         <div className={cuCard({ tight: true })}>
           <div className="space-y-4">
+            {/* Global datalist for provider suggestions */}
+            <datalist id="cu-providers">
+              {config.providers.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </datalist>
             {(['default', ...FEATURE_KEYS] as const).map((feature) => {
               const choice = resolveChoice(feature)
               const testKey = `test_${feature}`
               const test = testResults[testKey]
               const isTesting = testingKey === testKey
+              const isUnknownProvider = !config.providers.find(p => p.id === choice.provider)
               return (
-                <div key={feature} className="flex items-center gap-4">
-                  <label className="w-36 text-white/70 text-sm shrink-0">
-                    {FEATURE_LABELS[feature]}
-                  </label>
-                  <select
-                    value={choice.provider}
-                    onChange={(e) => {
-                      const newChoice: ModelChoice = {
-                        ...choice,
-                        provider: e.target.value,
-                      }
-                      window.api.configSetChoice(feature, newChoice)
-                      if (config) {
-                        setConfig({
-                          ...config,
-                          ...(feature === 'default'
-                            ? { default: newChoice }
-                            : { features: { ...config.features, [feature]: newChoice } }),
-                        })
-                      }
-                    }}
-                    className="cu-input text-sm px-3 py-1.5 w-40"
-                  >
-                    {config.providers.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="flex-1 relative">
-                    <input
-                      type="text"
-                      value={choice.model}
-                      onChange={(e) => {
-                        const newChoice: ModelChoice = {
-                          ...choice,
-                          model: e.target.value,
-                        }
-                        window.api.configSetChoice(feature, newChoice)
-                        if (config) {
-                          setConfig({
-                            ...config,
-                            ...(feature === 'default'
-                              ? { default: newChoice }
-                              : { features: { ...config.features, [feature]: newChoice } }),
-                          })
-                        }
-                      }}
-                      list={`models-${choice.provider}`}
-                      className="cu-input text-sm px-3 py-1.5 w-full"
-                      placeholder="模型名称"
-                    />
-                    {modelLists[choice.provider] && modelLists[choice.provider]!.length > 0 && (
-                      <datalist id={`models-${choice.provider}`}>
-                        {modelLists[choice.provider]!.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.label || m.id}
-                          </option>
-                        ))}
-                      </datalist>
+                <div key={feature}>
+                  <div className="flex items-center gap-4">
+                    <label className="w-36 text-white/70 text-sm shrink-0">
+                      {FEATURE_LABELS[feature]}
+                    </label>
+                    <div className="w-40">
+                      <input
+                        type="text"
+                        value={choice.provider}
+                        onChange={(e) => {
+                          const newChoice: ModelChoice = { ...choice, provider: e.target.value }
+                          window.api.configSetChoice(feature, newChoice)
+                          if (config) {
+                            setConfig({
+                              ...config,
+                              ...(feature === 'default'
+                                ? { default: newChoice }
+                                : { features: { ...config.features, [feature]: newChoice } }),
+                            })
+                          }
+                        }}
+                        list="cu-providers"
+                        className="cu-input text-sm px-3 py-1.5 w-full"
+                        placeholder="Provider ID"
+                      />
+                    </div>
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={choice.model}
+                        onChange={(e) => {
+                          const newChoice: ModelChoice = { ...choice, model: e.target.value }
+                          window.api.configSetChoice(feature, newChoice)
+                          if (config) {
+                            setConfig({
+                              ...config,
+                              ...(feature === 'default'
+                                ? { default: newChoice }
+                                : { features: { ...config.features, [feature]: newChoice } }),
+                            })
+                          }
+                        }}
+                        list={`models-${choice.provider}`}
+                        className="cu-input text-sm px-3 py-1.5 w-full"
+                        placeholder="模型名称"
+                      />
+                      {modelLists[choice.provider] && modelLists[choice.provider]!.length > 0 && (
+                        <datalist id={`models-${choice.provider}`}>
+                          {modelLists[choice.provider]!.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label || m.id}
+                            </option>
+                          ))}
+                        </datalist>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handleFetchModels(choice.provider)}
+                      disabled={fetchingModels[choice.provider]}
+                      className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
+                      aria-label={`拉取 ${choice.provider} 的模型列表`}
+                    >
+                      {fetchingModels[choice.provider] ? (
+                        <Spinner label="" />
+                      ) : (
+                        <>
+                          <Icon name="refresh" className="h-4 w-4" />
+                          拉取模型
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleTest(testKey, choice)}
+                      disabled={isTesting}
+                      className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
+                    >
+                      {isTesting ? <Spinner label="" /> : '测试'}
+                    </button>
+                    {test && (
+                      <span className="text-xs text-white/60">
+                        {test.latency !== undefined
+                          ? `${test.latency}ms`
+                          : test.error}
+                      </span>
+                    )}
+                    {modelListStatus[choice.provider] === 'ok' && modelLists[choice.provider] && (
+                      <span className="text-xs text-mint">
+                        已获取 {modelLists[choice.provider]!.length} 个模型
+                      </span>
+                    )}
+                    {modelListStatus[choice.provider] === 'empty' && (
+                      <span className={cuNotice('info') + ' text-xs'}>
+                        该提供商未提供模型列表，请手动输入模型名称
+                      </span>
+                    )}
+                    {modelListStatus[choice.provider] === 'error' && (
+                      <span className={cuNotice('error') + ' text-xs'}>
+                        {testResults[`models_${choice.provider}`]?.error || '拉取失败'}
+                      </span>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleFetchModels(choice.provider)}
-                    disabled={fetchingModels[choice.provider]}
-                    className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
-                    aria-label={`拉取 ${choice.provider} 的模型列表`}
-                  >
-                    {fetchingModels[choice.provider] ? (
-                      <Spinner label="" />
-                    ) : (
-                      <>
-                        <Icon name="refresh" className="h-4 w-4" />
-                        拉取模型
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => handleTest(testKey, choice)}
-                    disabled={isTesting}
-                    className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
-                  >
-                    {isTesting ? <Spinner label="" /> : '测试'}
-                  </button>
-                  {test && (
-                    <span className="text-xs text-white/60">
-                      {test.latency !== undefined
-                        ? `${test.latency}ms`
-                        : test.error}
-                    </span>
-                  )}
-                  {modelListStatus[choice.provider] === 'ok' && modelLists[choice.provider] && (
-                    <span className="text-xs text-mint">
-                      已获取 {modelLists[choice.provider]!.length} 个模型
-                    </span>
-                  )}
-                  {modelListStatus[choice.provider] === 'empty' && (
-                    <span className={cuNotice('info') + ' text-xs'}>
-                      该提供商未提供模型列表，请手动输入模型名称
-                    </span>
-                  )}
-                  {modelListStatus[choice.provider] === 'error' && (
-                    <span className={cuNotice('error') + ' text-xs'}>
-                      {testResults[`models_${choice.provider}`]?.error || '拉取失败'}
-                    </span>
+                  {isUnknownProvider && (
+                    <div className={cuNotice('warn') + ' text-xs flex items-center gap-2 mt-2'}>
+                      <span>还没有这个 provider：<code className="font-mono">{choice.provider}</code>。可以先到下方「自定义 Provider」把它建出来，或者直接保存——调用时会报错提示。</span>
+                      <button
+                        onClick={() => {
+                          setEditingProvider({
+                            id: choice.provider,
+                            label: '',
+                            baseUrl: '',
+                            format: 'openai',
+                            headers: {},
+                          })
+                          setProviderPreFillId(choice.provider)
+                        }}
+                        className={`${cuCtaGhost} px-2 py-1 text-xs whitespace-nowrap`}
+                      >
+                        补建这个 Provider
+                      </button>
+                    </div>
                   )}
                 </div>
               )
@@ -452,7 +491,7 @@ export default function Settings() {
           </button>
 
           {editingProvider && (
-            <div className={cuCard({ tight: true }) + ' border-l-4 border-l-iris'}>
+            <div id="provider-editor" className={cuCard({ tight: true }) + ' border-l-4 border-l-iris'}>
               <h4 className="font-semibold text-white/90 text-sm mb-3">添加/编辑 Provider</h4>
               <div className="space-y-3">
                 <input
@@ -463,6 +502,7 @@ export default function Settings() {
                   }
                   placeholder="ID（如 my-provider）"
                   className="cu-input text-sm px-3 py-1.5 w-full"
+                  data-field="id"
                 />
                 <input
                   type="text"
@@ -472,6 +512,7 @@ export default function Settings() {
                   }
                   placeholder="显示名称"
                   className="cu-input text-sm px-3 py-1.5 w-full"
+                  data-field="label"
                 />
                 <input
                   type="text"
@@ -481,6 +522,7 @@ export default function Settings() {
                   }
                   placeholder="Base URL（如 https://api.example.com）"
                   className="cu-input text-sm px-3 py-1.5 w-full"
+                  data-field="baseUrl"
                 />
                 <div>
                   <label className="block text-white/70 text-xs mb-1">协议格式</label>
