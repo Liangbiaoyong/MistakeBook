@@ -35,10 +35,20 @@ npm install --registry=https://registry.npmmirror.com
 ## 数据流
 
 ```
-热键 → 框选（capture/）→ 视觉模型识别（llm/）→ 人工确认（Composer.tsx）
+热键 → 框选截图（capture/）
+     → 后台识别（llm/，不阻塞界面）
+     → 右下角浮层 + 桌面通知窗显示进度与倒计时
+     → 30 秒无操作即自动保存；也可点「编辑」进 Composer 改
      → 写入 Markdown + 图片（store/vault.ts）→ 更新 SQLite 索引（store/index-db.ts）
      → 列表 / 详情 / 复习 / 统计（renderer）
 ```
+
+**流水线跑在渲染进程**（`App.tsx` 持有任务状态），所以主窗口**收进托盘时它仍在跑**：
+
+- ⚠ 主窗口关掉了 `backgroundThrottling` —— 隐藏窗口默认会被节流（定时器降到约每分钟一次），
+  不关掉的话 30 秒自动保存倒计时会直接卡住。
+- 桌面通知窗（`main/notify-window.ts`）是**独立窗口**，只要应用还活着（托盘常驻）就能显示，
+  不需要打开主界面。它 `focusable: false`，不会抢走你正在用的窗口的焦点。
 
 **两条铁律**：
 

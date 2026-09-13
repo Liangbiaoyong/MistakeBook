@@ -67,6 +67,13 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
 
   /* ── 详情叠加层 ──────────────────────────────────────── */
   const [detailId, setDetailId] = useState<string | null>(null)
+  /** 详情里的原始截图默认只露一截：整页扫描图会把题目/答案全挤到折叠线以下 */
+  const [imageExpanded, setImageExpanded] = useState(false)
+
+  // 换一条错题就收起原图，免得上一张的展开状态被带过来
+  useEffect(() => {
+    setImageExpanded(false)
+  }, [detailId])
   const [detailData, setDetailData] = useState<Mistake | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
@@ -300,13 +307,30 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
               <Spinner label="正在加载…" />
             ) : detailData ? (
               <div className="space-y-6">
-                {/* 原始截图 */}
+                {/* 原始截图 —— 默认只露顶部一截。整页扫描图不设限的话会占满整个面板，
+                    把 chips 和题目全挤到折叠线以下，得先滚过一页图才看得到真正要看的东西。 */}
                 {detailData.imagePath && (
-                  <img
-                    src={window.api.assetUrl(detailData.imagePath)}
-                    alt="原始截图"
-                    className="w-full rounded-2xl border border-white/20"
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setImageExpanded((v) => !v)}
+                    aria-label={imageExpanded ? '收起原始截图' : '展开原始截图'}
+                    className="relative block w-full cursor-zoom-in overflow-hidden rounded-2xl border border-white/20 bg-black/30 transition-colors duration-200 hover:border-white/40"
+                  >
+                    <img
+                      src={window.api.assetUrl(detailData.imagePath)}
+                      alt="原始截图"
+                      className={
+                        imageExpanded
+                          ? 'w-full'
+                          : 'max-h-52 w-full object-cover object-top'
+                      }
+                    />
+                    {!imageExpanded && (
+                      <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent py-2 text-center text-xs text-white/80">
+                        点击展开原图
+                      </span>
+                    )}
+                  </button>
                 )}
 
                 {/* 元数据 chips */}

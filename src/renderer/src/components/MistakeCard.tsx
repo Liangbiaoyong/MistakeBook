@@ -4,6 +4,7 @@
 import type { MistakeSummary } from '@shared/types'
 import { statusLabel, statusTone, formatDate } from '../lib/format'
 import { accentFor, cuCard, ACCENT } from '../design/tokens'
+import Markdown from './Markdown'
 
 interface MistakeCardProps {
   item: MistakeSummary
@@ -16,10 +17,19 @@ export default function MistakeCard({ item, onClick }: MistakeCardProps): React.
   const tone = statusTone(item.status)
 
   return (
-    <button
-      type="button"
+    // 用 div 而不是 button：题目预览必须走 Markdown（里面是 <div>/<p>），
+    // 而 <button> 的内容模型只允许行内内容。键盘可达性用 role + onKeyDown 补回来。
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className={`${cuCard({ interactive: true })} flex flex-col gap-3 text-left cursor-pointer`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick?.()
+        }
+      }}
+      className={`${cuCard({ interactive: true })} flex cursor-pointer flex-col gap-3 text-left`}
     >
       {/* 顶部：科目 + 状态 */}
       <div className="flex items-center justify-between">
@@ -43,10 +53,10 @@ export default function MistakeCard({ item, onClick }: MistakeCardProps): React.
         </span>
       </div>
 
-      {/* 题目预览 */}
-      <p className="line-clamp-3 text-sm leading-relaxed text-white/90">
-        {item.questionHead}
-      </p>
+      {/* 题目预览 —— 必须走 Markdown。直接当纯文本渲染的话，$...$ 会原样显示出美元符号 */}
+      <div className="min-h-[3.5rem]">
+        <Markdown source={item.questionHead} />
+      </div>
 
       {/* 底部：元数据 */}
       <div className="mt-auto flex flex-wrap gap-2 text-xs text-white/60">
@@ -66,6 +76,6 @@ export default function MistakeCard({ item, onClick }: MistakeCardProps): React.
 
       {/* 日期 */}
       <p className="text-xs text-white/40">{formatDate(item.created)}</p>
-    </button>
+    </div>
   )
 }

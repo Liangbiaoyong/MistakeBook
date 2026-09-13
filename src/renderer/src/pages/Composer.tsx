@@ -10,6 +10,7 @@ import { cuCard, cuCtaPrimary, cuCtaGhost, cuNotice, Icon } from '../design/toke
 
 interface ComposerProps {
   payload: CapturePayload
+  initial?: Extraction
   onClose: () => void
 }
 
@@ -26,7 +27,7 @@ interface FormState {
   body: MistakeBody
 }
 
-export default function Composer({ payload, onClose }: ComposerProps): React.JSX.Element {
+export default function Composer({ payload, initial, onClose }: ComposerProps): React.JSX.Element {
   const [extraction, setExtraction] = useState<Extraction | null>(null)
   const [loading, setLoading] = useState(true)
   const [extracting, setExtracting] = useState(false)
@@ -45,8 +46,28 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
     body: { question: '', myThought: '', solution: '', cause: '' }
   })
 
-  /* ── 调用 LLM 提取 ──────────────────────────────────── */
+  /* ── 调用 LLM 提取（仅在未提供 initial 时执行） ──────────────────────────────────── */
   useEffect(() => {
+    if (initial) {
+      // 已有预填数据，跳过提取
+      setExtraction(initial)
+      setForm({
+        subject: initial.subject,
+        chapter: initial.chapter ?? [],
+        points: initial.points ?? [],
+        type: initial.type,
+        level: initial.level ?? 3,
+        myAnswer: initial.myAnswer ?? '',
+        rightAnswer: initial.rightAnswer ?? '',
+        errorType: initial.errorType ?? '',
+        source: initial.source ?? '',
+        body: initial.body ?? { question: '' }
+      })
+      setLoading(false)
+      setExtracting(false)
+      return
+    }
+
     let cancelled = false
 
     const run = async () => {
@@ -78,7 +99,7 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
 
     void run()
     return () => { cancelled = true }
-  }, [payload.imageAbsPath])
+  }, [payload.imageAbsPath, initial])
 
   /* ── 更新表单 ──────────────────────────────────── */
   const update = useCallback(

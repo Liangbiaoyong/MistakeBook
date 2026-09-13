@@ -40,6 +40,7 @@ import {
 } from './config'
 import { startCapture, overlayHtmlPath } from './capture/capture'
 import { registerHotkey, unregisterHotkeys } from './capture/hotkey'
+import { initNotifyWindow, pushNotifyState, getNotifyWindow } from './notify-window'
 import { chatText, chatVisionJSON, listModels } from './llm/client'
 import { z } from 'zod'
 import { ExtractionSchema } from './llm/schema'
@@ -160,7 +161,10 @@ function createWindow(): void {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // 截图识别与自动保存的流水线跑在渲染层。窗口收进托盘后是隐藏状态，
+      // 而隐藏窗口默认会被节流（定时器降到约每分钟一次），30 秒倒计时会直接卡住。
+      backgroundThrottling: false
     }
   })
 
@@ -230,7 +234,8 @@ async function doCapture(): Promise<CapturePayload | null> {
   }
   logLine('hotkey', `截图成功: ${payload.imageAbsPath}`)
   lastCapture = payload
-  if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
+  // 刻意**不**把主窗口弹出来：截图应该能在不打开软件的情况下完成，
+  // 反馈交给桌面通知窗（右下角那张卡片）。
   mainWindow?.webContents.send(IPC.captureCaptured, payload)
   return payload
 }
@@ -471,7 +476,8 @@ async function runSelfTest(imagePath?: string): Promise<number> {
       user: '用 JSON 回答：{"firstLine":"图中最上面的那行文字"}',
       imageAbsPath: imagePath,
       schema: z.object({ firstLine: z.string() }),
-      maxTokens: 800
+      // 给足预算：网关默认开思考模式，给少了会被推理吃光、拿不到正文
+      maxTokens: 4096
     })
     say(`视觉识别 : OK (${Date.now() - t0}ms) → ${JSON.stringify(out).slice(0, 200)}`)
     return 0
@@ -512,6 +518,25 @@ app.whenReady().then(async () => {
   createWindow()
   createTray()
   setupHotkey()
+  initNotifyWindow()
+
+  // 监听通知窗口的按钮操作，转发给主窗口渲染进程
+  const notifyWin = getNotifyWindow()
+  if (notifyWin) {
+    notifyWin.webContents.on('did-finish-load', () => {
+      ipcMain.on(IPC.notifyAction, (_event, payload: { taskId: string; action: string }) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.notifyCommand, payload)
+        }
+      })
+    })
+  }
+
+  // 处理渲染进程推送的任务状态
+  ipcMain.handle(IPC.notifySync, (_event, tasks: Array<{ id: string; status: string }>) => {
+    pushNotifyState(tasks as any)
+    return null
+  })
 
   // 索引为空 → 从 Markdown 全量重建（文件才是真相源）
   try {

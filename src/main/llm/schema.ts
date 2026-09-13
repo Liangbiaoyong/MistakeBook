@@ -8,6 +8,43 @@ import type { ErrorType, QuestionType } from '@shared/types'
 
 // ── 基础 schema ──
 
+/**
+ * 模型常把「不知道」写成字符串 "undefined" / "null" / "N/A" / "无" 而不是 null。
+ * 这类哨兵值必须在入库前清掉 —— 否则会原样存进 Markdown，界面上就显示成 "undefined"。
+ * （实测就踩过：`source: undefined` 与正文里一整段 `undefined`。）
+ */
+const SENTINELS = new Set([
+  'undefined', 'null', 'nil', 'none', 'nan', 'n/a', 'na', 'not available',
+  '-', '--', '—', '无', '没有', '未知', '不知道', '不详', '空', 'null值'
+])
+
+export function cleanOptional(v: unknown): string | undefined {
+  if (v == null) return undefined
+  if (typeof v === 'object') return undefined
+  const s = String(v).trim()
+  if (!s) return undefined
+  if (SENTINELS.has(s.toLowerCase())) return undefined
+  return s
+}
+
+/** 清洗后仍为空就丢掉的字符串字段 */
+const OptionalText = z.preprocess(cleanOptional, z.string().optional())
+
+/** 数组元素也逐个清洗，去掉模型塞进来的哨兵值 */
+const TextArray = z.preprocess(
+  (v) => {
+    const arr = Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split(',') : []
+    return arr.map(cleanOptional).filter((x): x is string => !!x)
+  },
+  z.array(z.string())
+)
+
+/** 题干：清洗后若为空，给一个占位而不是让整次识别失败（截图别丢） */
+const QuestionText = z.preprocess(
+  (v) => cleanOptional(v) ?? '(未能识别题干，请手动补上)',
+  z.string()
+)
+
 /** 题型枚举 - 模型返回值外的一律落到「其他」 */
 export const QuestionTypeSchema = z.enum(QUESTION_TYPES).catch((): QuestionType => '其他')
 
@@ -26,11 +63,11 @@ export const ReviewStateSchema = z.object({
 
 /** 错题正文各小节 */
 export const MistakeBodySchema = z.object({
-  question: z.string().min(1),
-  myThought: z.string().optional(),
-  solution: z.string().optional(),
-  cause: z.string().optional(),
-  variant: z.string().optional()
+  question: QuestionText,
+  myThought: OptionalText,
+  solution: OptionalText,
+  cause: OptionalText,
+  variant: OptionalText
 })
 
 // ── LLM 抽取结果 ──
@@ -40,16 +77,16 @@ export const MistakeBodySchema = z.object({
  * confidence 为 0..1，chapter 和 points 默认空数组
  */
 export const ExtractionSchema = z.object({
-  subject: z.string().min(1),
-  chapter: z.array(z.string()).default([]),
-  points: z.array(z.string()).default([]),
+  subject: z.preprocess((v) => cleanOptional(v) ?? '未分类', z.string()),
+  chapter: TextArray,
+  points: TextArray,
   type: QuestionTypeSchema,
   level: z.number().min(1).max(5).optional(),
-  myAnswer: z.string().optional(),
-  rightAnswer: z.string().optional(),
+  myAnswer: OptionalText,
+  rightAnswer: OptionalText,
   errorType: ErrorTypeSchema.optional(),
   confidence: z.number().min(0).max(1),
-  source: z.string().optional(),
+  source: OptionalText,
   body: MistakeBodySchema
 })
 

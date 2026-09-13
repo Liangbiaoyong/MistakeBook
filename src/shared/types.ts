@@ -81,7 +81,14 @@ export type MistakeSummary = Pick<
   | 'level'
   | 'confidence'
   | 'review'
-> & { questionHead: string; imagePath?: string }
+> & {
+  /**
+   * 题干预览。**是 Markdown 片段**（含 `$...$` 公式）——
+   * 渲染时必须走 Markdown 组件，直接当纯文本显示会把美元符号原样露出来。
+   */
+  questionHead: string
+  imagePath?: string
+}
 
 /* ────────────── LLM 抽取结果 ────────────── */
 
@@ -198,6 +205,8 @@ export interface AppSettings {
   hotkey: string
   /** 统计曲线保留最近多少天 */
   statsWindowDays: number
+  /** 识别成功后自动保存等待秒数（0 = 不自动保存） */
+  autoSaveSeconds?: number
 }
 
 export interface Result<T> {

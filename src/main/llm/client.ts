@@ -223,14 +223,20 @@ async function runJSON<T>(
   opts: { maxTokens: number; temperature: number; signal?: AbortSignal }
 ): Promise<T> {
   let lastError = ''
+  let maxTokens = opts.maxTokens
   for (let attempt = 0; attempt < 2; attempt++) {
     let raw: string
     try {
-      raw = await callModel(r, choice, turns, opts)
+      raw = await callModel(r, choice, turns, { ...opts, maxTokens })
     } catch (e) {
       // 传输层失败（网络、空内容、限流）也重试一次 —— 这类失败常常是偶发的
       lastError = e instanceof Error ? e.message : String(e)
       if (attempt === 1) break
+      // 空内容多半是「思考」把输出预算吃光了（有的网关默认开思考模式，且忽略关闭参数）。
+      // 重试时把预算翻倍，而不是原地撞同一堵墙。
+      if (lastError.includes('没有返回文本内容')) {
+        maxTokens = Math.min(maxTokens * 2, 16384)
+      }
       turns = [
         ...turns,
         { role: 'user', blocks: [text(`上一次调用失败：${lastError}。请直接给出结果。`)] }

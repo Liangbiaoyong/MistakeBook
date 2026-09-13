@@ -53,7 +53,10 @@ const api: Api = {
   settingsSet: (patch) => ipcRenderer.invoke(IPC.settingsSet, patch),
 
   // 同步构造：仅拼字符串，无需往返主进程
-  assetUrl: (rel) => `${ASSET_SCHEME}://local/${rel.split('/').map(encodeURIComponent).join('/')}`
+  assetUrl: (rel) => `${ASSET_SCHEME}://local/${rel.split('/').map(encodeURIComponent).join('/')}`,
+
+  notifySync: (tasks) => ipcRenderer.invoke(IPC.notifySync, tasks),
+  onNotifyCommand: (cb) => on<{ taskId: string; action: string }>(IPC.notifyCommand, cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

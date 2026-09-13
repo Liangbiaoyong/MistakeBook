@@ -142,14 +142,68 @@ app.whenReady().then(async () => {
     `(() => { const b=[...document.querySelectorAll('nav button')].find(x=>x.textContent.includes(${JSON.stringify(label)})); if(b) b.click(); return !!b })()`
   )
   const shoot = async (name) => {
-    const img = await win.webContents.capturePage()
-    fs.writeFileSync(path.join(OUT, name), img.toPNG())
-    console.log(`[shots] 已保存 ${name}`)
+    // capturePage 在窗口被遮挡时会抛 UnknownVizError（Chromium 合成器），
+    // 所以每张都先置顶再截，并允许重试 —— 不能因为一次偶发失败就卡死整个脚本。
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        win.show()
+        win.focus()
+        win.moveTop()
+        await wait(300)
+        const img = await Promise.race([
+          win.webContents.capturePage(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('capturePage 超时')), 8000))
+        ])
+        fs.writeFileSync(path.join(OUT, name), img.toPNG())
+        console.log(`[shots] 已保存 ${name}`)
+        return
+      } catch (e) {
+        console.log(`[shots] ${name} 第 ${attempt} 次失败：${e && e.message}`)
+        await wait(700)
+      }
+    }
+    console.log(`[shots] ❌ ${name} 截图失败`)
   }
 
-  // 1. 书库
+  // 1. 书库（顺带做一次断言：公式必须真的被 KaTeX 渲染，不能只靠肉眼看图）
   await wait(700)
+  const katex = await win.webContents.executeJavaScript(`document.querySelectorAll('.katex').length`)
+  const strayDollars = await win.webContents.executeJavaScript(
+    `(document.body.innerText.match(/\\$/g) || []).length`
+  )
+  console.log(`[shots] 断言 书库：KaTeX 公式 ${katex} 个，残留 $ ${strayDollars} 个`)
+  if (katex === 0 || strayDollars > 0) {
+    console.log('[shots] 断言失败：题干里的公式没有渲染成数学')
+    app.exit(2)
+    return
+  }
   await shoot('library.png')
+
+  // 1b. 详情浮层 —— 顺带量一下它有没有超出视口（「靠上显示不完全」就是这个问题）
+  console.log('[shots] → 打开详情')
+  const js = (code) => Promise.race([
+    win.webContents.executeJavaScript(code),
+    new Promise((r) => setTimeout(() => r('__TIMEOUT__'), 8000))
+  ])
+  const clicked = await js(`(() => { const c = document.querySelector('main [role="button"]'); if (c) c.click(); return !!c })()`)
+  console.log('[shots] → 点击结果:', clicked)
+  await wait(900)
+  const box = await js(`(() => {
+    const d = document.querySelector('[aria-label="错题详情"] > div')
+    if (!d) return null
+    const r = d.getBoundingClientRect()
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height), vh: innerHeight }
+  })()`)
+  console.log(`[shots] 断言 详情浮层：${JSON.stringify(box)}`)
+  if (!box || box === '__TIMEOUT__' || box.top < 0 || box.bottom > box.vh) {
+    console.log('[shots] 断言失败：详情浮层超出视口（或没能打开）')
+    app.exit(3)
+    return
+  }
+  await shoot('detail.png')
+  await js(`(() => { const b = document.querySelector('[aria-label="关闭详情"]'); if (b) b.click(); return !!b })()`)
+  await wait(500)
+  console.log('[shots] → 详情完成')
 
   // 2. 复习
   await click('复习'); await wait(900); await shoot('review.png')
@@ -160,24 +214,33 @@ app.whenReady().then(async () => {
   // 4. 设置
   await click('设置'); await wait(1200); await shoot('settings.png')
 
-  // 5. 录入窗（识别完成后）
+  // 5. 右下角浮层：识别中（让 extract 一直不返回，停在识别态）
   await click('书库'); await wait(500)
-  extractMode = 'fast'
+  extractMode = 'hang'
   const b64 = fs.readFileSync(SHOT_IMG).toString('base64')
   const payload = { imageAbsPath: SHOT_IMG, thumbDataUrl: `data:image/png;base64,${b64}` }
   win.webContents.send('capture:captured', payload)
-  await wait(2400)
-  await shoot('composer-filled.png')
+  await wait(1500)
+  await shoot('widget-recognizing.png')
 
-  // 6. 录入窗（识别进行中 —— 最后拍，因为它会一直停在这个状态）
+  // 丢掉这个卡住的任务
   await win.webContents.executeJavaScript(
-    `(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='取消'); if(b) b.click(); return !!b })()`
+    `(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('丢弃')); if(b) b.click(); return !!b })()`
   )
-  await wait(500)
-  extractMode = 'hang'
+  await wait(600)
+
+  // 6. 右下角浮层：识别完成（倒计时 + 保存/编辑/丢弃）
+  extractMode = 'fast'
   win.webContents.send('capture:captured', payload)
-  await wait(1600)
-  await shoot('composer-loading.png')
+  await wait(2200)
+  await shoot('widget-ready.png')
+
+  // 7. 点「编辑」进完整录入窗（结果预填）
+  await win.webContents.executeJavaScript(
+    `(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('编辑')); if(b) b.click(); return !!b })()`
+  )
+  await wait(1500)
+  await shoot('composer-filled.png')
 
   console.log('[shots] 完成')
   app.exit(0)

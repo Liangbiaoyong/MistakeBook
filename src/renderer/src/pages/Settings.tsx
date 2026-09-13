@@ -38,6 +38,7 @@ export default function Settings() {
   const [indexRebuilding, setIndexRebuilding] = useState(false)
   const [examDate, setExamDate] = useState('')
   const [hotkey, setHotkey] = useState('')
+  const [autoSaveSeconds, setAutoSaveSeconds] = useState<number>(30)
   const [planMsg, setPlanMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [savingPlan, setSavingPlan] = useState(false)
   const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
@@ -62,6 +63,7 @@ export default function Settings() {
     if (settingsResult.ok && settingsResult.data) {
       setExamDate(settingsResult.data.examDate ?? '')
       setHotkey(settingsResult.data.hotkey)
+      setAutoSaveSeconds(settingsResult.data.autoSaveSeconds ?? 30)
     }
     setLoading(false)
   }, [])
@@ -71,10 +73,12 @@ export default function Settings() {
     setPlanMsg(null)
     const result = await window.api.settingsSet({
       examDate: examDate || undefined,
-      hotkey: hotkey.trim() || undefined
+      hotkey: hotkey.trim() || undefined,
+      autoSaveSeconds: autoSaveSeconds
     })
     if (result.ok && result.data) {
       setHotkey(result.data.hotkey)
+      setAutoSaveSeconds(result.data.autoSaveSeconds ?? 30)
       setPlanMsg({ kind: 'ok', text: '已保存' })
     } else {
       setPlanMsg({ kind: 'error', text: result.error ?? '保存失败' })
@@ -650,6 +654,28 @@ export default function Settings() {
               placeholder="Alt+Shift+A"
               className="cu-input w-[200px] font-mono"
             />
+          </div>
+
+          <div className="cu-divider my-4" />
+
+          <div className="text-white/70 text-sm">识别后自动保存（秒）</div>
+          <p className="text-white/50 text-xs mt-1 mb-3">
+            0 表示不自动保存，等你手动确认
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="number"
+              min={0}
+              max={120}
+              value={autoSaveSeconds}
+              onChange={(e) => setAutoSaveSeconds(Math.max(0, Math.min(120, Number(e.target.value) || 0)))}
+              aria-label="识别后自动保存秒数"
+              className="cu-input w-[200px]"
+            />
+            <span className="text-white/40 text-xs">范围 0–120 秒</span>
+          </div>
+
+          <div className="mt-4">
             <button
               onClick={() => void handleSavePlan()}
               disabled={savingPlan}

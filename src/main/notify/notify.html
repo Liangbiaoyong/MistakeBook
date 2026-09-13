@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>通知</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      user-select: none;
+      font: 400 13px/1.5 'Segoe UI', system-ui, 'Microsoft YaHei', sans-serif;
+    }
+
+    #cards {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .card {
+      /* 桌面通知必须**在任何背景上都可读** —— 尤其是白底的 PDF 页面。
+         所以不能沿用软件内部那套「10% 白玻璃 + 白字」：压在白色页面上等于看不见。
+         这里用深色近乎不透明的底 + 细白边，保证对比度。 */
+      background: rgba(18, 18, 20, 0.90);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 16px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      padding: 14px 16px;
+      color: #fff;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .status-text {
+      font-size: 13px;
+      color: rgba(255,255,255,0.92);
+      margin-bottom: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-secondary {
+      color: rgba(255,255,255,0.6);
+      font-size: 12px;
+    }
+
+    /* 识别中 - 扫描条动画 */
+    .sweep-bar {
+      height: 3px;
+      background: rgba(78, 205, 196, 0.2);
+      border-radius: 9999px;
+      position: relative;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .sweep-bar::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: #4ecdc4;
+      border-radius: 9999px;
+      animation: sweep 1.5s ease-in-out infinite;
+    }
+
+    @keyframes sweep {
+      0% { left: -100%; }
+      100% { left: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .sweep-bar::after { animation: none; left: 0; opacity: 0.5; }
+    }
+
+    /* 倒计时进度条 */
+    .countdown-bar {
+      height: 2px;
+      background: rgba(78, 205, 196, 0.2);
+      border-radius: 9999px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+
+    .countdown-bar-fill {
+      height: 100%;
+      background: #4ecdc4;
+      border-radius: 9999px;
+      transition: width 1s linear;
+    }
+
+    .countdown-text {
+      font-size: 11px;
+      color: rgba(255,255,255,0.5);
+      margin-top: 4px;
+    }
+
+    /* 按钮样式 */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .btn {
+      border-radius: 9999px;
+      padding: 5px 14px;
+      font-size: 12.5px;
+      border: none;
+      cursor: pointer;
+      transition: all 200ms ease-out;
+      font-family: inherit;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .btn { transition: none; }
+    }
+
+    .btn-primary {
+      background: #fff;
+      color: #000;
+    }
+
+    .btn-primary:hover {
+      background: rgba(255,255,255,0.9);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: rgba(255,255,255,0.92);
+      border: 1px solid rgba(255,255,255,0.20);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(255,255,255,0.10);
+    }
+
+    /* 保存成功 - 薄荷色对勾 */
+    .saved-text {
+      color: #4ecdc4;
+      font-weight: 500;
+      font-size: 13px;
+    }
+
+    /* 错误 - 珊瑚色 */
+    .error-text {
+      color: #ff6b6b;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="cards"></div>
+
+  <script>
+    const { ipcRenderer } = require('electron')
+    const cardsContainer = document.getElementById('cards')
+
+    ipcRenderer.on('notify:state', (_event, tasks) => {
+      cardsContainer.innerHTML = ''
+
+      // 全部渲染，不过滤 —— 尤其是 saved：用户必须看到「已保存 ✓」才算确认入库成功。
+      // 移除时机由渲染层管（保存成功后 2.5 秒它会把任务删掉，这里就自然空了）。
+      tasks.forEach((task) => {
+        const card = document.createElement('div')
+        card.className = 'card'
+
+        if (task.status === 'recognizing') {
+          card.innerHTML = `
+            <div class="status-text">正在识别...</div>
+            <div class="sweep-bar"></div>
+          `
+        } else if (task.status === 'ready' && task.extraction) {
+          const subject = task.extraction.subject || '未知'
+          // 字段名必须与 Extraction 类型一致：是 points，不是 knowledgePoints
+          const knowledge = task.extraction.points?.[0] || ''
+          const summary = knowledge ? `${subject} · ${knowledge}` : subject
+          const remaining = task.remaining || 0
+
+          card.innerHTML = `
+            <div class="status-text">${escapeHtml(summary)}</div>
+            <div class="countdown-text" id="countdown-${task.id}">${remaining} 秒后自动保存</div>
+            <div class="countdown-bar">
+              <div class="countdown-bar-fill" id="bar-${task.id}" style="width: ${(remaining / 30) * 100}%"></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" data-action="save" data-task-id="${task.id}">保存</button>
+              <button class="btn btn-ghost" data-action="edit" data-task-id="${task.id}">编辑</button>
+              <button class="btn btn-ghost" data-action="discard" data-task-id="${task.id}">丢弃</button>
+            </div>
+          `
+        } else if (task.status === 'saving') {
+          card.innerHTML = `
+            <div class="status-text">正在保存...</div>
+            <div class="sweep-bar"></div>
+          `
+        } else if (task.status === 'saved') {
+          const subject = task.extraction?.subject || ''
+          const knowledge = task.extraction?.points?.[0] || ''
+          const summary = [subject, knowledge].filter(Boolean).join(' · ')
+          card.innerHTML = `
+            <div class="status-text saved-text">已保存 ✓</div>
+            ${summary ? `<div class="countdown-text">${escapeHtml(summary)}</div>` : ''}
+          `
+        } else if (task.status === 'error') {
+          const errorMsg = task.error || '识别失败'
+          card.innerHTML = `
+            <div class="error-text">${escapeHtml(errorMsg)}</div>
+            <div class="btn-row">
+              <button class="btn btn-ghost" data-action="retry" data-task-id="${task.id}">重试</button>
+              <button class="btn btn-ghost" data-action="discard" data-task-id="${task.id}">丢弃</button>
+            </div>
+          `
+        }
+
+        cardsContainer.appendChild(card)
+      })
+
+      // 绑定按钮事件
+      cardsContainer.querySelectorAll('[data-action]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const action = btn.getAttribute('data-action')
+          const taskId = btn.getAttribute('data-task-id')
+          if (action && taskId) {
+            ipcRenderer.send('notify:action', { taskId, action })
+          }
+        })
+      })
+
+      // 卡片数量会变，窗口高度得跟着变 —— 固定的高度会把第二张卡裁掉
+      requestAnimationFrame(() => {
+        ipcRenderer.send('notify:resize', Math.ceil(document.body.scrollHeight))
+      })
+    })
+
+    // 每秒更新倒计时
+    setInterval(() => {
+      cardsContainer.querySelectorAll('[id^="countdown-"]').forEach((el) => {
+        const taskId = el.id.replace('countdown-', '')
+        const parts = el.textContent.split(' ')
+        let remaining = parseInt(parts[0], 10)
+        if (!isNaN(remaining) && remaining > 0) {
+          remaining -= 1
+          el.textContent = `${remaining} 秒后自动保存`
+
+          const bar = document.getElementById(`bar-${taskId}`)
+          if (bar) {
+            bar.style.width = `${(remaining / 30) * 100}%`
+          }
+        }
+      })
+    }, 1000)
+
+    function escapeHtml(str) {
+      const div = document.createElement('div')
+      div.textContent = str
+      return div.innerHTML
+    }
+  </script>
+</body>
+</html>

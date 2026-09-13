@@ -1,7 +1,7 @@
 {
   "name": "mistakebook",
   "productName": "MistakeBook",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "AI 错题本 — 热键截图即录，大模型理解，Markdown 存储，LaTeX 渲染，错因分析与考点排行",
   "main": "./out/main/index.js",
   "author": "Liangbiaoyong",

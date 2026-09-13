@@ -63,7 +63,16 @@ export const IPC = {
   settingsSet: 'settings:set',
 
   /** 取某张图片的可显示 URL（自定义协议） */
-  assetUrl: 'asset:url'
+  assetUrl: 'asset:url',
+
+  /** 通知窗口：主进程 → 通知窗口，推送任务状态 */
+  notifyState: 'notify:state',
+  /** 通知窗口：通知窗口 → 主进程，用户点击按钮 */
+  notifyAction: 'notify:action',
+  /** 通知窗口：主窗口渲染进程 → 主进程，推送任务列表 */
+  notifySync: 'notify:sync',
+  /** 通知窗口：主进程 → 主窗口渲染进程，转发按钮操作 */
+  notifyCommand: 'notify:command'
 } as const
 
 export interface CapturePayload {
@@ -115,6 +124,24 @@ export interface Api {
   settingsSet(patch: Partial<AppSettings>): Promise<Result<AppSettings>>
 
   assetUrl(relPath: string): string
+
+  /** 通知窗口：推送任务状态到主进程 */
+  notifySync(tasks: Array<{
+    id: string
+    status: string
+    extraction?: {
+      subject?: string
+      knowledgePoints?: string[]
+    } | null
+    remaining?: number
+    error?: string
+    payload?: {
+      imageAbsPath: string
+    }
+  }>): Promise<Result<null>>
+
+  /** 通知窗口：监听按钮操作命令 */
+  onNotifyCommand(cb: (cmd: { taskId: string; action: string }) => void): () => void
 }
 
 declare global {

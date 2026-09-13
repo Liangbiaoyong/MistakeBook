@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon, cuContainer, type IconName } from './design/tokens'
 import Composer from './pages/Composer'
+import CaptureWidget, { type CaptureTask } from './components/CaptureWidget'
 import Library from './pages/Library'
 import Review from './pages/Review'
 import Stats from './pages/Stats'
@@ -19,16 +20,141 @@ const NAV: { key: PageKey; label: string; icon: IconName; hint: string }[] = [
   { key: 'settings', label: '设置', icon: 'settings', hint: '模型与仓库' }
 ]
 
+let taskCounter = 0
+
 export default function App(): React.JSX.Element {
   const [page, setPage] = useState<PageKey>('library')
-  const [composer, setComposer] = useState<CapturePayload | null>(null)
+  const [tasks, setTasks] = useState<CaptureTask[]>([])
+  const [editingTask, setEditingTask] = useState<CaptureTask | null>(null)
   const hotkeyHint = 'Alt+Shift+A'
+  const timersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
 
-  // 主进程截完图就把 payload 推来，直接打开录入窗
+  /* ── 清理单个任务的定时器 ──────────────────────────────────── */
+  const clearTimer = useCallback((taskId: string) => {
+    const t = timersRef.current.get(taskId)
+    if (t) {
+      clearInterval(t)
+      timersRef.current.delete(taskId)
+    }
+  }, [])
+
+  /* ── 组件卸载时清理所有定时器 ──────────────────────────────────── */
   useEffect(() => {
-    const offCaptured = window.api.onCaptured((p) => {
-      setComposer(p)
+    return () => {
+      timersRef.current.forEach((t) => clearInterval(t))
+      timersRef.current.clear()
+    }
+  }, [])
+
+  /* ── 启动自动保存倒计时 ──────────────────────────────────── */
+  const startCountdown = useCallback(
+    (taskId: string, delaySeconds: number) => {
+      if (delaySeconds <= 0) return
+
+      clearTimer(taskId)
+      let remaining = delaySeconds
+
+      const tick = () => {
+        remaining -= 1
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, remaining } : t
+          )
+        )
+
+        if (remaining <= 0) {
+          clearTimer(taskId)
+          // 触发自动保存
+          setTasks((prev) => {
+            const task = prev.find((t) => t.id === taskId)
+            if (task && task.status === 'ready' && task.extraction) {
+              // 异步保存
+              void saveTask(taskId, task)
+              return prev.map((t) =>
+                t.id === taskId ? { ...t, status: 'saving' as const } : t
+              )
+            }
+            return prev
+          })
+        }
+      }
+
+      const timer = setInterval(tick, 1000)
+      timersRef.current.set(taskId, timer)
+    },
+    [clearTimer]
+  )
+
+  /* ── 保存任务 ──────────────────────────────────── */
+  const saveTask = useCallback(async (taskId: string, task: CaptureTask) => {
+    if (!task.extraction) return
+
+    clearTimer(taskId)
+    const r = await window.api.save({
+      extraction: task.extraction,
+      imageAbsPath: task.payload.imageAbsPath
     })
+
+    if (r.ok) {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, status: 'saved' as const } : t
+        )
+      )
+      // 2.5s 后自动移除
+      setTimeout(() => {
+        setTasks((prev) => prev.filter((t) => t.id !== taskId))
+      }, 2500)
+    } else {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, status: 'error' as const, error: r.error ?? '保存失败' } : t
+        )
+      )
+    }
+  }, [clearTimer])
+
+  /* ── 处理截图完成回调 ──────────────────────────────────── */
+  const handleCaptured = useCallback(
+    (payload: CapturePayload) => {
+      const id = `task-${++taskCounter}`
+      const newTask: CaptureTask = {
+        id,
+        payload,
+        status: 'recognizing'
+      }
+
+      setTasks((prev) => [...prev, newTask])
+
+      // 读取自动保存延迟设置后开始识别
+      void (async () => {
+        const settings = await window.api.settingsGet()
+        const autoSaveDelay = (settings.ok && settings.data?.autoSaveSeconds) || 30
+
+        const r = await window.api.extract(payload.imageAbsPath)
+        if (r.ok && r.data) {
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, status: 'ready' as const, extraction: r.data!, remaining: autoSaveDelay } : t
+            )
+          )
+          // 启动倒计时
+          startCountdown(id, autoSaveDelay)
+        } else {
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
+            )
+          )
+        }
+      })()
+    },
+    [startCountdown]
+  )
+
+  /* ── 挂载热键与菜单回调 ──────────────────────────────────── */
+  useEffect(() => {
+    const offCaptured = window.api.onCaptured(handleCaptured)
     const offOpen = window.api.onOpenComposer(() => {
       void window.api.captureStart()
     })
@@ -36,14 +162,122 @@ export default function App(): React.JSX.Element {
       offCaptured()
       offOpen()
     }
-  }, [])
+  }, [handleCaptured])
 
+  /* ── 截图录入按钮（与热键行为一致） ──────────────────────────────────── */
   const startCapture = useCallback(async () => {
     const r = await window.api.captureStart()
     if (!r.ok && r.error) window.alert(r.error)
   }, [])
 
-  const closeComposer = useCallback(() => setComposer(null), [])
+  /* ── 任务操作：保存、编辑、丢弃、重试 ──────────────────────────────────── */
+  const handleSave = useCallback(
+    (taskId: string) => {
+      setTasks((prev) => {
+        const task = prev.find((t) => t.id === taskId)
+        if (task && task.status === 'ready' && task.extraction) {
+          void saveTask(taskId, task)
+          return prev.map((t) =>
+            t.id === taskId ? { ...t, status: 'saving' as const } : t
+          )
+        }
+        return prev
+      })
+    },
+    [saveTask]
+  )
+
+  const handleEdit = useCallback((taskId: string) => {
+    setTasks((prev) => {
+      const task = prev.find((t) => t.id === taskId)
+      if (task) {
+        setEditingTask(task)
+      }
+      return prev
+    })
+  }, [])
+
+  const handleDiscard = useCallback(
+    (taskId: string) => {
+      clearTimer(taskId)
+      setTasks((prev) => prev.filter((t) => t.id !== taskId))
+    },
+    [clearTimer]
+  )
+
+  const handleRetry = useCallback(
+    (taskId: string) => {
+      clearTimer(taskId)
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, status: 'recognizing' as const, error: undefined } : t
+        )
+      )
+
+      // 重新开始识别
+      const task = tasks.find((t) => t.id === taskId)
+      if (task) {
+        void (async () => {
+          const r = await window.api.extract(task.payload.imageAbsPath)
+          if (r.ok && r.data) {
+            const settings = await window.api.settingsGet()
+            const autoSaveDelay = (settings.ok && settings.data?.autoSaveSeconds) || 30
+
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === taskId ? { ...t, status: 'ready' as const, extraction: r.data!, remaining: autoSaveDelay } : t
+              )
+            )
+            startCountdown(taskId, autoSaveDelay)
+          } else {
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === taskId ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
+              )
+            )
+          }
+        })()
+      }
+    },
+    [clearTimer, startCountdown, tasks]
+  )
+
+  /* ── 编辑完成回调 ──────────────────────────────────── */
+  const handleComposerClose = useCallback(() => {
+    if (editingTask) {
+      // 编辑完成，移除该任务
+      setTasks((prev) => prev.filter((t) => t.id !== editingTask.id))
+      setEditingTask(null)
+    }
+  }, [editingTask])
+
+  /* ── 同步任务状态到通知窗口 ──────────────────────────────────── */
+  useEffect(() => {
+    void window.api.notifySync(tasks)
+  }, [tasks])
+
+  /* ── 监听通知窗口的按钮操作 ──────────────────────────────────── */
+  useEffect(() => {
+    const offCommand = window.api.onNotifyCommand(({ taskId, action }) => {
+      switch (action) {
+        case 'save':
+          handleSave(taskId)
+          break
+        case 'edit':
+          handleEdit(taskId)
+          break
+        case 'discard':
+          handleDiscard(taskId)
+          break
+        case 'retry':
+          handleRetry(taskId)
+          break
+      }
+    })
+    return () => {
+      offCommand()
+    }
+  }, [handleSave, handleEdit, handleDiscard, handleRetry])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -107,8 +341,23 @@ export default function App(): React.JSX.Element {
         </div>
       </main>
 
-      {/* ── 录入确认窗（截图后弹出） ── */}
-      {composer && <Composer payload={composer} onClose={closeComposer} />}
+      {/* ── 编辑确认窗（从 CaptureWidget 打开） ── */}
+      {editingTask && editingTask.extraction && (
+        <Composer
+          payload={editingTask.payload}
+          initial={editingTask.extraction}
+          onClose={handleComposerClose}
+        />
+      )}
+
+      {/* ── 后台识别浮动组件 ── */}
+      <CaptureWidget
+        tasks={tasks}
+        onSave={handleSave}
+        onEdit={handleEdit}
+        onDiscard={handleDiscard}
+        onRetry={handleRetry}
+      />
 
       {/* ── 通知提示 ── */}
       <Toast />
