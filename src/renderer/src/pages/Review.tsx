@@ -18,7 +18,11 @@ const GRADE_KEYS = GRADES as readonly Grade[]
 const LIMIT_OPTIONS = [10, 20, 50, 0] as const
 const LIMIT_LABELS: Record<number, string> = { 10: '10 题', 20: '20 题', 50: '50 题', 0: '全部' }
 
-export default function Review() {
+interface ReviewProps {
+  initialScope?: ListFilter
+}
+
+export default function Review({ initialScope }: ReviewProps) {
   const [items, setItems] = useState<MistakeSummary[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [showAnswer, setShowAnswer] = useState(false)
@@ -30,6 +34,7 @@ export default function Review() {
   const [batch, setBatch] = useState<ReviewBatch | null>(null)
   const [offset, setOffset] = useState(0)
   const [wrapNotice, setWrapNotice] = useState(false)
+  const [lastBatchIds, setLastBatchIds] = useState<string[]>([])
 
   /* ── 范围筛选状态 ────────────────────────────────────── */
   const [subject, setSubject] = useState('')
@@ -51,6 +56,20 @@ export default function Review() {
   const [detailLoading, setDetailLoading] = useState(false)
 
   const seqRef = useRef(0)
+  const initialScopeRef = useRef<ListFilter | undefined>(initialScope)
+
+  /* ── 应用初始范围（如果提供） ──────────────────────── */
+  useEffect(() => {
+    if (!initialScopeRef.current) return
+    const scope = initialScopeRef.current
+    initialScopeRef.current = undefined // 只应用一次
+
+    setSubject(scope.subject ?? '')
+    setChapterPoint(scope.chapter ?? scope.point ?? '')
+    setErrorType(scope.errorType ?? '')
+    setStatus(scope.status ?? '')
+    setMode('all') // 使用 all 模式避免只过到期的导致死锁
+  }, [])
 
   const buildQuery = useCallback((): ReviewQuery => {
     const scope: ListFilter = {}
@@ -85,10 +104,14 @@ export default function Review() {
       setError(result.error ?? '加载待复习错题失败')
       setItems([])
       setBatch(null)
+      setLastBatchIds([])
     } else {
       const data = result.data ?? null
       setBatch(data)
-      setItems(data?.items ?? [])
+      const newItems = data?.items ?? []
+      setItems(newItems)
+      // 记录本批次的 ID，以便支持重做
+      setLastBatchIds(newItems.map((item) => item.id))
       setCurrentIndex(0)
       setShowAnswer(false)
       setWrapNotice(data !== null && data.from === 1 && query.offset > 0)
@@ -164,11 +187,16 @@ export default function Review() {
     setPendingQuery({ ...buildQuery(), offset: newOffset })
   }, [batch, offset, limit, buildQuery])
 
-  /* ── 重新开始 ──────────────────────────────────────────── */
-  const restart = useCallback(() => {
-    setOffset(0)
-    setPendingQuery({ ...buildQuery(), offset: 0 })
-  }, [buildQuery])
+  /* ── 再做一遍这批 ────────────────────────────────────── */
+  const redoBatch = useCallback(() => {
+    if (lastBatchIds.length === 0) return
+    setPendingQuery({
+      ...buildQuery(),
+      ids: lastBatchIds,
+      offset: 0,
+      mode: 'all' // 使用 all 模式避免因 next 日期在未来而无法显示
+    })
+  }, [lastBatchIds, buildQuery])
 
   /* ── 初次加载 ──────────────────────────────────────────── */
   useEffect(() => {
@@ -294,33 +322,61 @@ export default function Review() {
             title="还没有错题"
             hint="当前筛选范围内没有匹配的错题"
             action={
-              <button
-                onClick={() => {
-                  setSubject('')
-                  setChapterPoint('')
-                  setErrorType('')
-                  setQuestionType('')
-                  setStatus('')
-                  setOnlyWithImage(false)
-                }}
-                className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
-              >
-                清除筛选
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setSubject('')
+                    setChapterPoint('')
+                    setErrorType('')
+                    setQuestionType('')
+                    setStatus('')
+                    setOnlyWithImage(false)
+                  }}
+                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
+                >
+                  清除筛选
+                </button>
+                {lastBatchIds.length > 0 && (
+                  <button
+                    onClick={redoBatch}
+                    className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
+                  >
+                    <Icon name="refresh" className="h-4 w-4 mr-2" />
+                    再做一遍上次这批
+                  </button>
+                )}
+              </div>
             }
           />
         ) : mode === 'due' ? (
           <Empty
             icon="review"
             title="这个范围内今天没有到期的错题"
-            hint="切换到「全部范围内」模式可以主动复习"
+            hint="可以切换模式或再做一遍上次练习的题目"
             action={
-              <button
-                onClick={() => setMode('all')}
-                className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
-              >
-                切到「全部范围内」
-              </button>
+              <div className="flex gap-3">
+                {lastBatchIds.length > 0 && (
+                  <button
+                    onClick={redoBatch}
+                    className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
+                  >
+                    <Icon name="refresh" className="h-4 w-4 mr-2" />
+                    再做一遍上次这批
+                  </button>
+                )}
+                <button
+                  onClick={() => setMode('all')}
+                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
+                >
+                  切到「全部范围内」
+                </button>
+                <button
+                  onClick={() => setFiltersExpanded(true)}
+                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
+                >
+                  换个范围
+                </button>
+              </div>
             }
           />
         ) : (
@@ -350,15 +406,21 @@ export default function Review() {
         <Empty
           icon="check"
           title="这批题目已全部完成"
-          hint="可以开始新的一轮复习"
+          hint="可以重新练习这批题目，或开始新的一轮复习"
           action={
             <div className="flex gap-3">
-              <button onClick={nextBatch} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
-                <Icon name="refresh" className="h-4 w-4" />
+              {lastBatchIds.length > 0 && (
+                <button onClick={redoBatch} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
+                  <Icon name="refresh" className="h-4 w-4 mr-2" />
+                  再做一遍这批
+                </button>
+              )}
+              <button onClick={nextBatch} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+                <Icon name="refresh" className="h-4 w-4 mr-2" />
                 换一批
               </button>
-              <button onClick={restart} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
-                重新开始
+              <button onClick={() => setFiltersExpanded(true)} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+                换个范围
               </button>
             </div>
           }

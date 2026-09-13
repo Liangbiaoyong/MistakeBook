@@ -3,6 +3,8 @@
  * 通道名集中在此，禁止在别处硬编码字符串。
  */
 import type {
+  AnalysisRecord,
+  AnalysisSummary,
   AppSettings,
   Extraction,
   FeatureKey,
@@ -48,6 +50,11 @@ export const IPC = {
   analysisErrorPatterns: 'analysis:errorPatterns',
   generateVariants: 'generate:variants',
   forecastTopics: 'forecast:topics',
+
+  /** 分析记录留档 */
+  analysisList: 'analysis:list',
+  analysisGet: 'analysis:get',
+  analysisRemove: 'analysis:remove',
 
   configGet: 'config:get',
   configSetChoice: 'config:setChoice',
@@ -108,7 +115,13 @@ export interface Api {
   stats(): Promise<Result<StatsOverview>>
   errorPatterns(filter?: ListFilter): Promise<Result<string>>
   variants(id: string, n?: number): Promise<Result<string>>
-  forecast(): Promise<Result<TopicRank[]>>
+  /** 分析完成后会自动留档，saved 是这次记录（含分析时间） */
+  forecast(): Promise<Result<{ topics: TopicRank[]; saved: AnalysisSummary | null }>>
+
+  /** 历史分析记录 */
+  analysisList(): Promise<Result<AnalysisSummary[]>>
+  analysisGet(id: string): Promise<Result<AnalysisRecord>>
+  analysisRemove(id: string): Promise<Result<null>>
 
   configGet(): Promise<Result<PublicModelConfig>>
   configSetChoice(feature: FeatureKey | 'default', choice: ModelChoice): Promise<Result<null>>

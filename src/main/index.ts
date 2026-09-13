@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { IPC } from '@shared/ipc'
 import type { CapturePayload } from '@shared/ipc'
 import type {
+  AnalysisSummary,
   AppSettings,
   Extraction,
   FeatureKey,
@@ -13,21 +14,30 @@ import type {
   ListFilter,
   Mistake,
   MistakeInput,
+  MistakeSummary,
   ModelChoice,
   ProviderConfig,
   Result,
   ReviewBatch,
-  ReviewQuery
+  ReviewQuery,
+  TopicRank
 } from '@shared/types'
 
 import { ensureDirs, getVaultDir, setVaultDir, assetsDir, getTempDir } from './store/paths'
+import {
+  saveAnalysis,
+  listAnalyses,
+  readAnalysis,
+  deleteAnalysis
+} from './store/analyses'
 import {
   saveMistake,
   readMistake,
   listMistakes,
   updateMistake,
   deleteMistake,
-  rebuildIndex
+  rebuildIndex,
+  allMistakes
 } from './store/vault'
 import { openIndex, initSchema, statsOverview, countRows } from './store/index-db'
 import {
@@ -76,6 +86,22 @@ function applyAutoStart(enabled: boolean): void {
  * 表现就是「任务栏 / 托盘图标是透明的」。打包版必须走 process.resourcesPath。
  * （配合 electron-builder.yml 的 extraResources 把 resources/ 拷进去。）
  */
+/** 把考点排行渲染成 Markdown 表格，用于留档 */function renderForecastMarkdown(topics: TopicRank[]): string {
+  const rows = topics.map(
+    (t, i) => `| ${i + 1} | ${t.point} | ${t.mistakes} | ${t.score.toFixed(1)} | ${t.reason} |`
+  )
+  return [
+    '## 高频考点排行',
+    '',
+    '依据你自己的错题分布推算，不是押题。',
+    '',
+    '| # | 考点 | 你的错题数 | 热度分 | 理由 |',
+    '| --- | --- | --- | --- | --- |',
+    ...rows,
+    ''
+  ].join('\n')
+}
+
 function resourcePath(name: string): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, name)
@@ -378,8 +404,20 @@ function registerHandlers(): void {
   })
 
   handle(IPC.reviewQuery, async (q: ReviewQuery): Promise<ReviewBatch> => {
-    // 范围过滤交给 store（它刚修好「多字段模糊搜索」，比我在这里重做一遍强）；
-    // 到期判断、排序、分批在 JS 侧做 —— 数据量在几千级，足够快。
+    // 「再做一遍这一批」：直接按给定 id 顺序取。
+    // 那批题刚评过分、next 已经推到未来，用 mode:'due' 重查只会拿到 0 条 ——
+    // 这正是「做完之后显示 0 题、又不让重做」的来源。
+    if (q.ids && q.ids.length > 0) {
+      const all = await listMistakes({})
+      const byId = new Map(all.map((s) => [s.id, s]))
+      const items = q.ids
+        .map((id) => byId.get(id))
+        .filter((x): x is MistakeSummary => x !== undefined)
+      logLine('review', `重做指定批次：${items.length} 条`)
+      return { items, total: items.length, from: items.length ? 1 : 0, to: items.length }
+    }
+
+    // 换一批：范围过滤交给 store（它有多字段模糊搜索），到期/排序/分批在 JS 侧做
     const scoped = await listMistakes(q.scope ?? {})
 
     const filtered = scoped.filter((s) => {
@@ -439,13 +477,60 @@ function registerHandlers(): void {
     return statsOverview(db)
   })
 
-  handle(IPC.analysisErrorPatterns, (filter: ListFilter | undefined) =>
-    analyzeErrorPatterns(filter)
-  )
+  handle(IPC.analysisErrorPatterns, async (filter: ListFilter | undefined) => {
+    const md = await analyzeErrorPatterns(filter)
+    // 有实质内容才留档；「错题太少」之类的提示不值得进历史
+    if (md && md.length > 200) {
+      try {
+        await saveAnalysis({ kind: 'patterns', title: '错因归纳', markdown: md })
+      } catch (e) {
+        logLine('analysis', `错因归纳留档失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return md
+  })
 
   handle(IPC.generateVariants, (id: string, n?: number) => generateVariants(id, n ?? 3))
 
-  handle(IPC.forecastTopics, () => forecastTopics())
+  handle(IPC.forecastTopics, async () => {
+    const topics = await forecastTopics()
+    if (topics.length === 0) return { topics, saved: null }
+
+    // 分析一次要跑十几秒还烧 token，而且「上次说了什么」是复习时要对着看的 —— 必须留档
+    let saved: AnalysisSummary | null = null
+    try {
+      const all = await allMistakes()
+      const rec = await saveAnalysis({
+        kind: 'forecast',
+        title: `高频考点排行 · ${topics.length} 项`,
+        markdown: renderForecastMarkdown(topics),
+        mistakeCount: all.length
+      })
+      saved = {
+        id: rec.id,
+        kind: rec.kind,
+        createdAt: rec.createdAt,
+        title: rec.title,
+        mistakeCount: all.length,
+        head: topics.slice(0, 3).map((t) => t.point).join(' · ')
+      }
+    } catch (e) {
+      // 留档失败不该让分析结果本身丢掉
+      logLine('analysis', `考点排行留档失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+    return { topics, saved }
+  })
+
+  handle(IPC.analysisList, () => listAnalyses())
+  handle(IPC.analysisGet, async (id: string) => {
+    const r = await readAnalysis(id)
+    if (!r) throw new Error(`找不到分析记录 ${id}`)
+    return r
+  })
+  handle(IPC.analysisRemove, async (id: string) => {
+    await deleteAnalysis(id)
+    return null
+  })
 
   handle(IPC.configGet, () => getPublicConfig())
 
@@ -524,11 +609,9 @@ async function runSelfTest(imagePath?: string): Promise<number> {
   const provider = getProviderById(choice.provider)
   const hasKey = !!getProviderKey(choice.provider)
 
-  // 同时写进日志：打包版没有控制台，日志是唯一的出口
-  const say = (line: string): void => {
-    console.log(line)
-    logLine('selftest', line)
-  }
+  // 同时写进日志：打包版没有控制台，日志是唯一的出口。
+  // logLine 自己会镜像到 console，所以这里不要再 console.log 一次（会打两遍）。
+  const say = (line: string): void => logLine('selftest', line)
 
   say('── MistakeBook 自检 ──')
   say(`版本     : ${app.getVersion()}${app.isPackaged ? '（打包版）' : '（开发）'}`)
@@ -536,6 +619,27 @@ async function runSelfTest(imagePath?: string): Promise<number> {
   say(`识别模型 : ${choice.provider} / ${choice.model}`)
   say(`协议格式 : ${provider?.format ?? 'openai'}   端点: ${provider?.baseUrl ?? '(未知 provider)'}`)
   say(`API Key  : ${hasKey ? '已配置' : '未配置 —— 请到「设置」里填写'}`)
+
+  // 分析留档自检：写一条再读回来再删掉（不留垃圾）。
+  // 这条覆盖「考点分析不能保存记录」那个 bug —— 落盘、读回、时间戳都在。
+  try {
+    const rec = await saveAnalysis({
+      kind: 'forecast',
+      title: '自检记录',
+      markdown: '## 自检\n\n分析留档往返检查。',
+      mistakeCount: 0
+    })
+    const back = await readAnalysis(rec.id)
+    const listed = await listAnalyses()
+    const okRoundTrip =
+      !!back && back.markdown.includes('分析留档往返检查') && !!back.createdAt && listed.some((a) => a.id === rec.id)
+    say(`分析留档 : ${okRoundTrip ? 'OK' : '失败'}  目录 ${path.join(getVaultDir(), 'analyses')}`)
+    say(`分析时间 : ${rec.createdAt}`)
+    await deleteAnalysis(rec.id)
+  } catch (e) {
+    say(`分析留档 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
+    return 6
+  }
 
   // 这几项在打包版里最容易「静默失效」——文件找不到不报错，只是静悄悄地不工作
   const mustExist: Array<[string, string]> = [
@@ -592,8 +696,13 @@ async function runSelfTest(imagePath?: string): Promise<number> {
 
 registerAssetScheme()
 
-// 单实例锁：防止第二个进程启动时产生两个托盘图标、两套热键、两个同时写数据库的进程
-const gotTheLock = app.requestSingleInstanceLock()
+// 单实例锁：防止第二个进程启动时产生两个托盘图标、两套热键、两个同时写数据库的进程。
+//
+// ⚠ 但 `--selftest` 必须豁免：它是一次性的诊断命令，开着应用时也要能跑。
+// 不加这个豁免的话，有实例在跑时自检会**静默退出**（什么都不打印），
+// 看起来就像"自检坏了"，非常难查。
+const isSelfTestRun = process.argv.slice(1).includes('--selftest')
+const gotTheLock = isSelfTestRun ? true : app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
   // 没拿到锁说明已经有实例在跑，直接退出

@@ -9,7 +9,7 @@ import Forecast from './pages/Forecast'
 import Settings from './pages/Settings'
 import Toast from './components/Toast'
 import type { CapturePayload } from '@shared/ipc'
-import type { Extraction } from '@shared/types'
+import type { Extraction, ListFilter } from '@shared/types'
 
 export type PageKey = 'library' | 'review' | 'stats' | 'forecast' | 'settings'
 
@@ -29,6 +29,9 @@ export default function App(): React.JSX.Element {
   const [editingTask, setEditingTask] = useState<CaptureTask | null>(null)
   const [hotkeyHint, setHotkeyHint] = useState('Alt+Shift+A')
   const timersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
+
+  /* ── 从考点跳转到复习的初始范围 ────────────────────── */
+  const [pendingReviewScope, setPendingReviewScope] = useState<ListFilter | null>(null)
 
   /* ── 启动时读取热键 ── */
   useEffect(() => {
@@ -306,6 +309,12 @@ export default function App(): React.JSX.Element {
     }
   }, [editingTask])
 
+  /* ── 从考点跳转到复习 ── */
+  const handleStudyPoint = useCallback((point: string) => {
+    setPendingReviewScope({ point })
+    setPage('review')
+  }, [])
+
   /* ── 同步任务状态到通知窗口 ── */
   useEffect(() => {
     void window.api.notifySync(tasks)
@@ -394,9 +403,14 @@ export default function App(): React.JSX.Element {
               onNavigateSettings={() => setPage('settings')}
             />
           )}
-          {page === 'review' && <Review />}
+          {page === 'review' && (
+            <Review
+              key={pendingReviewScope ? 'with-scope' : 'default'}
+              initialScope={pendingReviewScope ?? undefined}
+            />
+          )}
           {page === 'stats' && <Stats />}
-          {page === 'forecast' && <Forecast />}
+          {page === 'forecast' && <Forecast onStudyPoint={handleStudyPoint} />}
           {page === 'settings' && <Settings />}
         </div>
       </main>

@@ -41,6 +41,24 @@ export function relativeDay(iso: string): string {
 }
 
 /**
+ * 格式化 ISO 日期字符串为本地可读格式（YYYY-MM-DD HH:mm）
+ */
+export function formatDateTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const y = d.getFullYear()
+    const m = pad(d.getMonth() + 1)
+    const day = pad(d.getDate())
+    const hh = pad(d.getHours())
+    const mm = pad(d.getMinutes())
+    return `${y}-${m}-${day} ${hh}:${mm}`
+  } catch {
+    return iso
+  }
+}
+
+/**
  * 状态文本标签
  */
 export function statusLabel(s: Status): string {

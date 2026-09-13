@@ -226,6 +226,12 @@ export interface ReviewQuery {
   offset: number
   /** 只看带原图的 */
   onlyWithImage?: boolean
+  /**
+   * 只做这些 id（按给定顺序）。
+   * 「再做一遍这一批」靠它实现 —— 那批题刚评过分、已经不到期了，
+   * 单靠 mode:'due' 重查只会拿到 0 条。
+   */
+  ids?: string[]
 }
 
 export interface ReviewBatch {
@@ -235,6 +241,29 @@ export interface ReviewBatch {
   /** 本批实际是第一题到第几题 */
   from: number
   to: number
+}
+
+/* ────────────── 分析记录 ────────────── */
+
+export const ANALYSIS_KINDS = ['forecast', 'patterns'] as const
+export type AnalysisKind = (typeof ANALYSIS_KINDS)[number]
+
+/** 一次分析的结果，落盘成 Markdown 存在 vault 的 analyses/ 下 */
+export interface AnalysisRecord {
+  id: string
+  kind: AnalysisKind
+  /** ISO 时间戳 */
+  createdAt: string
+  title: string
+  markdown: string
+}
+
+/** 列表用的轻量视图 */
+export type AnalysisSummary = Omit<AnalysisRecord, 'markdown'> & {
+  /** 正文首行摘要 */
+  head: string
+  /** 当时有几道错题参与了分析 */
+  mistakeCount?: number
 }
 
 /** 复习偏好，持久化到设置里，下次打开保持 */

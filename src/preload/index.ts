@@ -36,6 +36,10 @@ const api: Api = {
   variants: (id, n) => ipcRenderer.invoke(IPC.generateVariants, id, n),
   forecast: () => ipcRenderer.invoke(IPC.forecastTopics),
 
+  analysisList: () => ipcRenderer.invoke(IPC.analysisList),
+  analysisGet: (id) => ipcRenderer.invoke(IPC.analysisGet, id),
+  analysisRemove: (id) => ipcRenderer.invoke(IPC.analysisRemove, id),
+
   configGet: () => ipcRenderer.invoke(IPC.configGet),
   configSetChoice: (feature, choice) => ipcRenderer.invoke(IPC.configSetChoice, feature, choice),
   configSetProviderKey: (providerId, apiKey) =>

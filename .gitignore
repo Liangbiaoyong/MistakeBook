@@ -1,7 +1,7 @@
 node_modules/
 out/
 dist/
-release/
+release*/
 # build/ 是 electron-builder 的 buildResources，但里面的图标要进仓库
 build/*
 !build/icon.png
