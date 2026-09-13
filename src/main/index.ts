@@ -51,6 +51,7 @@ import { generateVariants } from './features/generate'
 import { forecastTopics } from './features/forecast'
 import { nextReview, isDue } from './review'
 import { getSettings, updateSettings } from './settings'
+import { logLine } from './log'
 
 const ASSET_SCHEME = 'cuoti-asset'
 
@@ -59,6 +60,15 @@ let tray: Tray | null = null
 let lastCapture: CapturePayload | null = null
 /** 只有当真的在退出时才放行窗口关闭，否则关窗口只是收进托盘 */
 let quitting = false
+
+/* ────────────── 通知 ────────────── */
+
+/** 向渲染进程推送用户可见的提示 */
+function notify(msg: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC.appNotify, msg)
+  }
+}
 
 /* ────────────── IPC 包装 ────────────── */
 
@@ -85,6 +95,7 @@ function handle<TArgs extends unknown[], TOut>(
     } catch (e) {
       const error = toMessage(e)
       console.error(`[ipc:${channel}]`, error)
+      logLine('ipc', `[${channel}] ${error}`)
       return { ok: false, error }
     }
   })
@@ -198,8 +209,13 @@ function createTray(): void {
 /* ────────────── 采集 ────────────── */
 
 async function doCapture(): Promise<CapturePayload | null> {
+  logLine('hotkey', '触发截图')
   const payload = await startCapture()
-  if (!payload) return null
+  if (!payload) {
+    logLine('hotkey', '截图返回 null')
+    return null
+  }
+  logLine('hotkey', `截图成功: ${payload.imageAbsPath}`)
   lastCapture = payload
   if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
   mainWindow?.webContents.send(IPC.captureCaptured, payload)
@@ -241,8 +257,14 @@ function registerHandlers(): void {
   // 注意：capture:start 由这里注册，而不是调用采集模块的 registerIpcHandlers()。
   // 截图完成后必须把 payload 推给渲染层去弹录入窗，这条事件流只能有一个主人。
   handle(IPC.captureStart, async (): Promise<null> => {
-    await doCapture()
-    return null
+    try {
+      await doCapture()
+      return null
+    } catch (err) {
+      logLine('ipc', `capture:start 失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify('截图失败，请重试')
+      return null
+    }
   })
 
   handle(IPC.extract, async (absPath: string | null): Promise<Extraction> => {
@@ -432,6 +454,7 @@ async function runSelfTest(imagePath?: string): Promise<number> {
 registerAssetScheme()
 
 app.whenReady().then(async () => {
+  logLine('app', '应用启动')
   ensureDirs()
   fs.mkdirSync(getTempDir(), { recursive: true })
 

@@ -6,6 +6,7 @@ import Review from './pages/Review'
 import Stats from './pages/Stats'
 import Forecast from './pages/Forecast'
 import Settings from './pages/Settings'
+import Toast from './components/Toast'
 import type { CapturePayload } from '@shared/ipc'
 
 export type PageKey = 'library' | 'review' | 'stats' | 'forecast' | 'settings'
@@ -108,6 +109,9 @@ export default function App(): React.JSX.Element {
 
       {/* ── 录入确认窗（截图后弹出） ── */}
       {composer && <Composer payload={composer} onClose={closeComposer} />}
+
+      {/* ── 通知提示 ── */}
+      <Toast />
     </div>
   )
 }

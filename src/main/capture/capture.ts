@@ -15,6 +15,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { randomUUID } from 'crypto'
 import type { CapturePayload } from '@shared/ipc'
+import { logLine } from '../log'
 // 必须用 ?asset 引入：out/ 只会带上被引用的资源，裸路径写 overlay.html 构建后就找不到了
 import overlayHtmlPath from './overlay.html?asset'
 
@@ -84,7 +85,7 @@ async function captureScreen(): Promise<NativeImage | null> {
     })
 
     if (sources.length === 0) {
-      console.error('[capture] desktopCapturer 未获取到任何屏幕源')
+      logLine('capture', 'desktopCapturer 未获取到任何屏幕源')
       return null
     }
 
@@ -95,12 +96,21 @@ async function captureScreen(): Promise<NativeImage | null> {
     )
     if (!source) {
       // 备用：尝试按名称匹配（某些系统上 display_id 可能不匹配）
+      logLine(
+        'capture',
+        `未找到匹配显示 ${displayId} 的源（共 ${sources.length} 个），回退到 sources[0]`
+      )
       source = sources[0]
+    } else {
+      logLine(
+        'capture',
+        `匹配到显示 ${displayId}，源 ${source.id}，共 ${sources.length} 个源`
+      )
     }
 
     return source.thumbnail
   } catch (err) {
-    console.error('[capture] 屏幕截图失败:', err)
+    logLine('capture', `屏幕截图失败: ${err instanceof Error ? err.message : String(err)}`)
     return null
   }
 }
@@ -194,7 +204,7 @@ function showOverlay(
 
     // 加载 overlay HTML
     overlayWin.loadFile(overlayHtmlPath, { search }).catch((err) => {
-      console.error('[capture] overlay 加载失败:', err)
+      logLine('capture', `overlay 加载失败: ${err instanceof Error ? err.message : String(err)}`)
       cleanup()
       resolve(null)
     })
@@ -270,18 +280,22 @@ export async function startCapture(): Promise<CapturePayload | null> {
   inflight = (async () => {
     let shotPath: string | null = null
     try {
+      logLine('capture', 'startCapture 开始')
+
       // 1. 截取屏幕
       const screenImage = await captureScreen()
       if (!screenImage) {
-        console.error('[capture] 屏幕截图为空，取消流程')
+        logLine('capture', '屏幕截图为空，取消流程 (reason: screenImage=null)')
         return null
       }
 
       // 2. 获取光标所在显示器信息
       const display = getCursorDisplay()
-      console.log(
-        `[capture] 显示 ${display.size.width}x${display.size.height} @${display.scaleFactor}x，` +
-          `截到 ${screenImage.getSize().width}x${screenImage.getSize().height}`
+      const imgSize = screenImage.getSize()
+      logLine(
+        'capture',
+        `显示 ${display.size.width}x${display.size.height} @${display.scaleFactor}x，` +
+          `截到 ${imgSize.width}x${imgSize.height}`
       )
 
       // 3. 整屏截图落盘，overlay 用 file:// 读它当背景
@@ -294,27 +308,28 @@ export async function startCapture(): Promise<CapturePayload | null> {
 
       // 5. 用户取消
       if (!rect) {
-        console.log('[capture] 用户取消截图')
+        logLine('capture', '用户取消截图 (reason: user cancelled)')
         return null
       }
-      console.log(
-        `[capture] 框选 ${rect.width}x${rect.height} @(${rect.x},${rect.y})`
+      logLine(
+        'capture',
+        `框选 ${rect.width}x${rect.height} @(${rect.x},${rect.y})，源图 ${imgSize.width}x${imgSize.height}`
       )
 
       // 6. 裁剪图片
       const croppedImage = cropImage(screenImage, rect)
       if (!croppedImage) {
-        console.log('[capture] 选区过小，视为取消')
+        logLine('capture', '选区过小 (<8px)，视为取消 (reason: rect too small)')
         return null
       }
 
       // 7. 保存到临时文件
       const payload = await saveTempImage(croppedImage)
       lastCapture = payload
-      console.log('[capture] 截图完成:', payload.imageAbsPath)
+      logLine('capture', `截图完成: ${payload.imageAbsPath}`)
       return payload
     } catch (err) {
-      console.error('[capture] 截图流程失败:', err)
+      logLine('capture', `截图流程失败: ${err instanceof Error ? err.message : String(err)}`)
       return null
     } finally {
       // 背景大图用完即删 —— 它只是给 overlay 看的，没有留存价值

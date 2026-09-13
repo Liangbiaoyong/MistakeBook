@@ -27,7 +27,6 @@
     #bg { filter: brightness(0.45) saturate(0.85); }
     #bg-live { clip-path: inset(100% 0 0 0); }
 
-    /* 选中框 */
     #selection {
       position: absolute;
       display: none;
@@ -35,11 +34,9 @@
       border: 1.5px solid #4ecdc4;
       box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 22px rgba(78, 205, 196, 0.35);
     }
-    /* 四角标记，让边界更好认 */
     #selection i {
       position: absolute; width: 9px; height: 9px;
-      background: #4ecdc4;
-      border-radius: 1px;
+      background: #4ecdc4; border-radius: 1px;
     }
     #selection i:nth-child(1) { top: -5px; left: -5px; }
     #selection i:nth-child(2) { top: -5px; right: -5px; }
@@ -56,7 +53,6 @@
       font: 600 12.5px/1.4 'Segoe UI', system-ui, sans-serif;
       white-space: nowrap;
     }
-    /* 贴近顶部时把标签翻到框内侧，避免跑出屏幕 */
     #size-label.below { top: auto; bottom: -32px; }
 
     #hint {
@@ -72,6 +68,30 @@
       white-space: nowrap;
     }
     #hint b { color: #4ecdc4; font-weight: 600; }
+
+    /* 提交后立刻给出确认，免得"松手了到底有没有反应" */
+    #busy {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      align-items: center; gap: 10px;
+      padding: 12px 22px;
+      border-radius: 9999px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(8px);
+      color: #fff;
+      font: 500 14px/1 'Segoe UI', system-ui, sans-serif;
+      white-space: nowrap;
+    }
+    #busy.on { display: flex; }
+    #busy .dot {
+      width: 13px; height: 13px; border-radius: 9999px;
+      border: 2px solid rgba(255, 255, 255, 0.28);
+      border-top-color: #4ecdc4;
+      animation: spin 700ms linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -81,7 +101,8 @@
     <i></i><i></i><i></i><i></i>
     <div id="size-label"></div>
   </div>
-  <div id="hint">拖动框选 · <b>回车</b> 确认 · <b>Esc</b> 取消</div>
+  <div id="hint">拖动框选 · <b>松开即识别</b> · <b>Esc</b> 取消</div>
+  <div id="busy"><span class="dot"></span>已截取，正在识别…</div>
 
   <script>
     const { ipcRenderer } = require('electron')
@@ -90,6 +111,8 @@
     const bgLive = document.getElementById('bg-live')
     const selection = document.getElementById('selection')
     const sizeLabel = document.getElementById('size-label')
+    const hint = document.getElementById('hint')
+    const busy = document.getElementById('busy')
 
     // 主进程只传文件路径过来；页面本身是 file://，可以直接引用本地文件
     const shot = new URLSearchParams(location.search).get('shot')
@@ -107,12 +130,17 @@
       bgDim.addEventListener('error', ready)
     }
 
+    const MIN = 8
     let dragging = false
+    let committing = false
     let start = null
     let sel = null   // { x, y, w, h } —— CSS 像素
 
     function pos(e) {
-      return { x: Math.min(Math.max(e.clientX, 0), innerWidth), y: Math.min(Math.max(e.clientY, 0), innerHeight) }
+      return {
+        x: Math.min(Math.max(e.clientX, 0), innerWidth),
+        y: Math.min(Math.max(e.clientY, 0), innerHeight)
+      }
     }
 
     function paint() {
@@ -127,8 +155,8 @@
       selection.style.width = sel.w + 'px'
       selection.style.height = sel.h + 'px'
 
-      // 选区处露出未压暗的原图
-      bgLive.style.clipPath = `inset(${sel.y}px ${innerWidth - sel.x - sel.w}px ${innerHeight - sel.y - sel.h}px ${sel.x}px)`
+      bgLive.style.clipPath =
+        `inset(${sel.y}px ${innerWidth - sel.x - sel.w}px ${innerHeight - sel.y - sel.h}px ${sel.x}px)`
 
       const dpr = window.devicePixelRatio || 1
       sizeLabel.textContent = `${Math.round(sel.w * dpr)} × ${Math.round(sel.h * dpr)}`
@@ -136,7 +164,7 @@
     }
 
     addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return
+      if (e.button !== 0 || committing) return
       dragging = true
       start = pos(e)
       sel = { x: start.x, y: start.y, w: 0, h: 0 }
@@ -144,7 +172,7 @@
     })
 
     addEventListener('mousemove', (e) => {
-      if (!dragging) return
+      if (!dragging || committing) return
       const p = pos(e)
       sel = {
         x: Math.min(start.x, p.x),
@@ -155,18 +183,26 @@
       paint()
     })
 
+    // 松手就提交 —— 用户的直觉是"拖完就完事"，不该还要再按一次回车。
+    // 选区太小时不提交也不关闭，让他重拖（当成误触）。
     addEventListener('mouseup', (e) => {
-      if (e.button !== 0) return
+      if (e.button !== 0 || !dragging) return
       dragging = false
+      if (!sel || sel.w < MIN || sel.h < MIN) {
+        sel = null
+        paint()
+        return
+      }
+      commit()
     })
 
-    // 右键取消
     addEventListener('contextmenu', (e) => {
       e.preventDefault()
-      ipcRenderer.send('overlay:cancel')
+      if (!committing) ipcRenderer.send('overlay:cancel')
     })
 
     addEventListener('keydown', (e) => {
+      if (committing) return
       if (e.key === 'Escape') {
         e.preventDefault()
         ipcRenderer.send('overlay:cancel')
@@ -177,14 +213,24 @@
     })
 
     function commit() {
-      if (!sel || sel.w < 8 || sel.h < 8) return   // 太小视为误触，不提交
+      if (committing) return
+      if (!sel || sel.w < MIN || sel.h < MIN) return
+      committing = true
+
+      // 先把确认态画出来，让用户看见"有反应"，再回传。
+      // 这点延时是刻意的：overlay 一被销毁，中间就没有任何可见反馈了。
+      busy.classList.add('on')
+      hint.textContent = '正在识别，稍候…'
+      document.body.style.cursor = 'default'
+
       const dpr = window.devicePixelRatio || 1
-      ipcRenderer.send('overlay:commit', {
+      const rect = {
         x: Math.round(sel.x * dpr),
         y: Math.round(sel.y * dpr),
         width: Math.round(sel.w * dpr),
         height: Math.round(sel.h * dpr)
-      })
+      }
+      setTimeout(() => ipcRenderer.send('overlay:commit', rect), 260)
     }
   </script>
 </body>

@@ -17,6 +17,7 @@ const api: Api = {
   captureStart: () => ipcRenderer.invoke(IPC.captureStart),
   onCaptured: (cb) => on<CapturePayload>(IPC.captureCaptured, cb),
   onOpenComposer: (cb) => on<void>(IPC.captureOpenComposer, () => cb()),
+  onNotify: (cb) => on<string>(IPC.appNotify, cb),
 
   extract: (imageAbsPath) => ipcRenderer.invoke(IPC.extract, imageAbsPath),
   extractFromClipboard: () => ipcRenderer.invoke(IPC.extract, null),

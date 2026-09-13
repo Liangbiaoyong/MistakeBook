@@ -28,6 +28,9 @@ export const IPC = {
   /** 主进程 → 渲染进程：请求打开录入确认窗 */
   captureOpenComposer: 'capture:openComposer',
 
+  /** 主进程 → 渲染进程：用户可见的提示信息 */
+  appNotify: 'app:notify',
+
   extract: 'llm:extract',
 
   mistakeSave: 'mistake:save',
@@ -75,6 +78,8 @@ export interface Api {
   captureStart(): Promise<Result<null>>
   onCaptured(cb: (p: CapturePayload) => void): () => void
   onOpenComposer(cb: () => void): () => void
+  /** 主进程推来的用户可见提示 */
+  onNotify(cb: (msg: string) => void): () => void
 
   extract(imageAbsPath: string): Promise<Result<Extraction>>
   extractFromClipboard(): Promise<Result<CapturePayload>>
