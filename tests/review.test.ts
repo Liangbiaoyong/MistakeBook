@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDue, nextReview } from '../src/main/review'
+import { deriveStatus, isDue, nextReview } from '../src/main/review'
 import type { ReviewState } from '../src/shared/types'
 
 const DAY = 86_400_000
@@ -105,5 +105,25 @@ describe('isDue —— 到期判断', () => {
 
   it('next 在将来 → 不到期', () => {
     expect(isDue({ round: 2, next: isoPlus(3) }, t)).toBe(false)
+  })
+})
+
+describe('deriveStatus —— 错题状态必须跟着复习历史走', () => {
+  it('忘了 / 困难 → 退回复习中（不论之前多熟）', () => {
+    expect(deriveStatus('again', 0)).toBe('reviewing')
+    expect(deriveStatus('again', 99)).toBe('reviewing')
+    expect(deriveStatus('hard', 99)).toBe('reviewing')
+  })
+
+  it('顺利复习到第 4 轮才算已掌握', () => {
+    expect(deriveStatus('good', 1)).toBe('reviewing')
+    expect(deriveStatus('good', 3)).toBe('reviewing')
+    expect(deriveStatus('good', 4)).toBe('mastered')
+    expect(deriveStatus('easy', 4)).toBe('mastered')
+    expect(deriveStatus('easy', 12)).toBe('mastered')
+  })
+
+  it('已掌握的题答错了会退回去（而不是继续挂着「已掌握」）', () => {
+    expect(deriveStatus('again', 3)).toBe('reviewing')
   })
 })

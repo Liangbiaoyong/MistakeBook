@@ -58,3 +58,22 @@ export function isDue(state: ReviewState, today = iso(new Date())): boolean {
   if (!next) return true
   return next <= today
 }
+
+/** 连续顺利复习到第几轮就算「已掌握」 */
+const MASTER_ROUND = 4
+
+/**
+ * 由本次评分推导错题状态。
+ *
+ * `status` 原先是个**死字段**：没有任何地方会自动推进它，于是所有题永远停在 `new`，
+ * 统计页的「已掌握」永远是 0，按状态筛选也筛不出东西 —— 而它本该是「我掌握了多少」的唯一答案。
+ * 这里让它跟着复习历史走。
+ *
+ * @param grade 本次评分（again 忘了 / hard 困难 / good 良好 / easy 简单）
+ * @param round 本次复习后的轮次（由 nextReview 给出）
+ */
+export function deriveStatus(grade: Grade, round: number): 'reviewing' | 'mastered' {
+  // 忘了或觉得困难：不论之前多熟都退回复习中（轮次本身已被 nextReview 回退）
+  if (grade === 'again' || grade === 'hard') return 'reviewing'
+  return round >= MASTER_ROUND ? 'mastered' : 'reviewing'
+}

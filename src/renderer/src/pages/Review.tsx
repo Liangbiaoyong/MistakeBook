@@ -220,19 +220,20 @@ export default function Review({ initialScope }: ReviewProps) {
       return
     }
 
-    // 显示下次复习反馈
-    const reviewState = result.data
-    if (reviewState) {
+    // 显示下次复习反馈 + 状态推进
+    // （状态也要说出来 —— 否则「已掌握」永远是个你看不见的数字）
+    const payload = result.data
+    if (payload) {
       const today = new Date().toISOString()
-      if (!reviewState.next) {
-        setGradeFeedback('已记录')
-      } else if (isSameDay(reviewState.next, today)) {
-        setGradeFeedback('今天还要再看一遍')
-      } else {
-        setGradeFeedback(`下次复习：${formatMonthDay(reviewState.next)}`)
-      }
-      // 2秒后自动隐藏
-      setTimeout(() => setGradeFeedback(null), 2000)
+      const schedule = !payload.review.next
+        ? '已记录'
+        : isSameDay(payload.review.next, today)
+          ? '今天还要再看一遍'
+          : `下次复习：${formatMonthDay(payload.review.next)}`
+      const statusNote = payload.status === 'mastered' ? '　·　已标记为「已掌握」' : ''
+      setGradeFeedback(schedule + statusNote)
+      // 2 秒后自动隐藏；不阻塞键盘连打
+      setTimeout(() => setGradeFeedback(null), 2200)
     }
 
     setShowAnswer(false)

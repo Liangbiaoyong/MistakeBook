@@ -22,6 +22,7 @@ import type {
   ReviewQuery,
   ReviewState,
   StatsOverview,
+  Status,
   TopicRank
 } from './types'
 
@@ -115,7 +116,8 @@ export interface Api {
 
   /** 按范围 / 模式 / 顺序 / 批次取一组复习题目（「换一批」靠 offset 前进） */
   reviewQuery(query: ReviewQuery): Promise<Result<ReviewBatch>>
-  grade(id: string, grade: Grade): Promise<Result<ReviewState>>
+  /** 评分；返回新的复习状态与推进后的错题状态（未复习→复习中→已掌握） */
+  grade(id: string, grade: Grade): Promise<Result<{ review: ReviewState; status: Status }>>
 
   stats(): Promise<Result<StatsOverview>>
   errorPatterns(filter?: ListFilter): Promise<Result<string>>

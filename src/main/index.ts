@@ -60,7 +60,7 @@ import { CAPTURE_SYSTEM } from './llm/prompts'
 import { analyzeErrorPatterns } from './features/analyze'
 import { generateVariants } from './features/generate'
 import { forecastTopics } from './features/forecast'
-import { nextReview, isDue } from './review'
+import { nextReview, isDue, deriveStatus } from './review'
 import { getSettings, updateSettings } from './settings'
 import { logLine } from './log'
 
@@ -526,10 +526,10 @@ function registerHandlers(): void {
     const m = await readMistake(id)
     if (!m) throw new Error(`找不到错题 ${id}`)
     const review = nextReview(m.review, grade, getSettings().examDate)
-    await updateMistake(id, { review })
-    // 把新的复习状态返回给界面 —— 这样才能显示「下次复习：9月16日」，
-    // 让调度从黑箱变成看得见的东西
-    return review
+    // 状态要跟着复习历史走 —— 否则它永远停在「未复习」，统计页的「已掌握」永远是 0
+    const status = deriveStatus(grade, review.round)
+    await updateMistake(id, { review, status })
+    return { review, status }
   })
 
   handle(IPC.statsOverview, () => {

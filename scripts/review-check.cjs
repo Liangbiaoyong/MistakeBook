@@ -59,10 +59,10 @@ ipcMain.handle('review:query', (_e, q) => {
   return ok(pageOf(q?.offset ?? 0, q?.limit ?? 0))
 })
 // 更新 stub：返回真实的 ReviewState，而不是 null
+// 评分现在返回 { review, status } —— 状态会跟着复习历史推进（未复习→复习中→已掌握）
 ipcMain.handle('review:grade', () => ok({
-  last: '2026-09-14',
-  next: '2026-09-16',
-  round: 2
+  review: { last: '2026-09-14', next: '2026-09-16', round: 2 },
+  status: 'reviewing'
 }))
 ipcMain.handle('mistake:get', (_e, id) => {
   const s = ALL.find((x) => x.id === id)
