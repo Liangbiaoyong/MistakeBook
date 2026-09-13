@@ -232,3 +232,112 @@ describe('questionPreview —— 预览不能把公式截断', () => {
     expect(questionPreview('')).toBe('')
   })
 })
+
+describe('frontmatter 保留未知字段', () => {
+  it('保留未知的 frontmatter 键', () => {
+    const raw = `---
+id: test-001
+created: '2026-01-01T00:00:00+08:00'
+subject: 数学
+chapter: []
+points: []
+type: 计算
+status: new
+confidence: 0.5
+review:
+  round: 0
+custom_key: custom_value
+another_key: 123
+tags:
+  - important
+  - easy
+---
+
+## 题目
+
+测试题干
+`
+    const m = markdownToMistake(raw)
+    expect(m._extra).toBeDefined()
+    expect(m._extra!.custom_key).toBe('custom_value')
+    expect(m._extra!.another_key).toBe(123)
+    expect(m._extra!.tags).toEqual(['important', 'easy'])
+
+    // 往返后这些字段仍然存在
+    const output = mistakeToMarkdown(m)
+    expect(output).toContain('custom_key: custom_value')
+    expect(output).toContain('another_key: 123')
+    expect(output).toContain('tags:')
+  })
+
+  it('保留未知的 body 节', () => {
+    const raw = `---
+id: test-002
+created: '2026-01-01T00:00:00+08:00'
+subject: 数学
+chapter: []
+points: []
+type: 计算
+status: new
+confidence: 0.5
+review:
+  round: 0
+---
+
+## 题目
+
+原始题干
+
+## 我的备注
+
+用户自己写的笔记，不能丢
+
+## 正确解法
+
+正确答案
+
+## 自定义节
+
+完全自定义的内容
+`
+    const m = markdownToMistake(raw)
+    expect(m.body.question).toBe('原始题干')
+    expect(m.body.solution).toBe('正确答案')
+    expect(m._extraBody).toBeDefined()
+    expect(m._extraBody!.length).toBe(2)
+    expect(m._extraBody![0]).toContain('## 我的备注')
+    expect(m._extraBody![0]).toContain('用户自己写的笔记，不能丢')
+    expect(m._extraBody![1]).toContain('## 自定义节')
+    expect(m._extraBody![1]).toContain('完全自定义的内容')
+
+    // 往返后这些节仍然存在
+    const output = mistakeToMarkdown(m)
+    expect(output).toContain('## 我的备注')
+    expect(output).toContain('用户自己写的笔记，不能丢')
+    expect(output).toContain('## 自定义节')
+    expect(output).toContain('完全自定义的内容')
+  })
+
+  it('无未知字段时 _extra 和 _extraBody 为 undefined', () => {
+    const m = markdownToMistake(mistakeToMarkdown(full))
+    expect(m._extra).toBeUndefined()
+    expect(m._extraBody).toBeUndefined()
+  })
+
+  it('完整的往返测试：带未知字段的记录', () => {
+    const custom: Mistake = {
+      ...full,
+      _extra: { my_custom: 'value', count: 42 },
+      _extraBody: ['## 我的扩展节\n\n扩展内容']
+    }
+    const output = mistakeToMarkdown(custom)
+    const back = markdownToMistake(output)
+
+    expect(back._extra).toBeDefined()
+    expect(back._extra!.my_custom).toBe('value')
+    expect(back._extra!.count).toBe(42)
+    expect(back._extraBody).toBeDefined()
+    expect(back._extraBody!.length).toBe(1)
+    expect(back._extraBody![0]).toContain('## 我的扩展节')
+  })
+})

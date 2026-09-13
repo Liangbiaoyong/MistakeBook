@@ -8,11 +8,24 @@
 import { readFile, writeFile, rename, copyFile, unlink, mkdir, readdir } from 'node:fs/promises'
 import { join, dirname, relative, sep } from 'node:path'
 import type { Mistake, MistakeInput, MistakeSummary, ListFilter } from '@shared/types'
-import { mistakesDir, assetsDir, getVaultDir } from './paths'
+import { mistakesDir, assetsDir, getVaultDir, getVaultStatus } from './paths'
 import { mistakeToMarkdown, markdownToMistake, pickUniqueId, mistakeRelPath } from './frontmatter'
 import { openIndex, initSchema, upsertRow, deleteRow, querySummaries } from './index-db'
 import { nextReview } from '../review'
 import { getSettings } from '../settings'
+
+/**
+ * 检查 vault 是否可用，如果不可用则抛出清晰错误
+ */
+function assertVaultAvailable(): void {
+  const status = getVaultStatus()
+  if (!status.exists) {
+    const configuredPath = status.configured || status.dir
+    throw new Error(
+      `「${configuredPath}」 不存在，可能是磁盘/移动硬盘没挂上。已停止写入，避免把错题写到别处。`
+    )
+  }
+}
 
 /* ────────────── 写入 ────────────── */
 
@@ -25,9 +38,10 @@ async function atomicWrite(absPath: string, content: string): Promise<void> {
 }
 
 async function writeMistake(m: Mistake): Promise<string> {
+  assertVaultAvailable()
   const absPath = join(getVaultDir(), mistakeRelPath(m))
   await atomicWrite(absPath, mistakeToMarkdown(m))
-  const db = openIndex()
+  const { db } = openIndex()
   initSchema(db)
   upsertRow(db, m, toRelPosix(absPath))
   return absPath
@@ -142,18 +156,41 @@ export async function saveMistake(
 /** 删除错题及其图片 */
 export async function deleteMistake(id: string): Promise<void> {
   const filePath = await findMistakeFile(id)
-  const m = filePath ? await readMistake(id) : null
 
-  if (filePath) await unlink(filePath).catch(() => {})
+  if (filePath) {
+    // 移动到回收站，而不是删除
+    // 如果移动失败（比如文件系统问题），会抛出错误
+    await moveToTrash(id, filePath)
+  }
 
-  const imageAbs = m?.imagePath
-    ? join(getVaultDir(), m.imagePath)
-    : join(assetsDir(), `${id}.png`)
-  await unlink(imageAbs).catch(() => {})
-
-  const db = openIndex()
+  const db = openIndex().db
   initSchema(db)
   deleteRow(db, id)
+}
+
+/**
+ * 移动错题到回收站
+ * .md移动失败会抛出错误，避免图片先消失
+ */
+async function moveToTrash(mistakeId: string, sourcePath: string): Promise<void> {
+  const vaultDir = getVaultDir()
+  const trashDir = join(vaultDir, '.trash', mistakeId)
+
+  // 创建回收站目录
+  await mkdir(trashDir, { recursive: true })
+
+  // 先移动 .md 文件
+  const destMd = join(trashDir, `${mistakeId}.md`)
+  await rename(sourcePath, destMd)
+
+  // 只有.md移动成功后才移动图片
+  try {
+    const imagePath = join(vaultDir, 'assets', `${mistakeId}.png`)
+    const destImage = join(trashDir, `${mistakeId}.png`)
+    await rename(imagePath, destImage)
+  } catch {
+    // 图片不存在，忽略
+  }
 }
 
 /* ────────────── 读取 ────────────── */
@@ -170,7 +207,7 @@ export async function readMistake(id: string): Promise<Mistake | null> {
 }
 
 export async function listMistakes(filter?: ListFilter): Promise<MistakeSummary[]> {
-  const db = openIndex()
+  const { db } = openIndex()
   initSchema(db)
   return querySummaries(db, filter ?? {})
 }
@@ -204,6 +241,8 @@ async function findByName(dir: string, fileName: string): Promise<string | null>
     const full = join(dir, entry.name)
     if (entry.isFile() && entry.name === fileName) return full
     if (entry.isDirectory()) {
+      // 跳过 .trash 目录
+      if (entry.name === '.trash') continue
       const found = await findByName(full, fileName)
       if (found) return found
     }
@@ -221,17 +260,22 @@ async function findAllMarkdownFiles(dir: string): Promise<string[]> {
   const out: string[] = []
   for (const entry of entries) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) out.push(...(await findAllMarkdownFiles(full)))
+    // 跳过 .trash 目录
+    if (entry.isDirectory() && entry.name !== '.trash') {
+      out.push(...(await findAllMarkdownFiles(full)))
+    }
     // 忽略写入中途留下的临时文件
-    else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full)
+    else if (entry.isFile() && entry.name.endsWith('.md')) {
+      out.push(full)
+    }
   }
   return out
 }
 
 /* ────────────── 索引重建 ────────────── */
 
-export async function rebuildIndex(): Promise<{ count: number }> {
-  const db = openIndex()
+export async function rebuildIndex(): Promise<{ count: number; needsRebuild: boolean }> {
+  const { db, needsRebuild } = openIndex()
   initSchema(db)
   db.exec('DELETE FROM points')
   db.exec('DELETE FROM chapters')
@@ -248,5 +292,5 @@ export async function rebuildIndex(): Promise<{ count: number }> {
       console.error('[vault] 重建时跳过无法解析的文件：', filePath, e)
     }
   }
-  return { count }
+  return { count, needsRebuild }
 }

@@ -15,7 +15,9 @@ import type {
   MistakeInput,
   ModelChoice,
   ProviderConfig,
-  Result
+  Result,
+  ReviewBatch,
+  ReviewQuery
 } from '@shared/types'
 
 import { ensureDirs, getVaultDir, setVaultDir, assetsDir, getTempDir } from './store/paths'
@@ -53,6 +55,17 @@ import { getSettings, updateSettings } from './settings'
 import { logLine } from './log'
 
 const ASSET_SCHEME = 'cuoti-asset'
+
+/**
+ * 应用开机自启设置
+ */
+function applyAutoStart(enabled: boolean): void {
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    // 打包版用 app.getName()，开发版用 package.json 里的 name
+    name: app.getName()
+  })
+}
 
 /**
  * 资源文件的真实路径。
@@ -198,13 +211,22 @@ function createWindow(): void {
 
 function showMain(): void {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow()
-  mainWindow?.show()
-  mainWindow?.focus()
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+
+  if (win.isMinimized()) win.restore()
+  win.show()
+  // ⚠ Windows 有「前台窗口抢占保护」：后台进程单纯 show() + focus() 往往只是任务栏图标
+  // 闪一下，窗口并不会真的跳到最前。先置顶、再取消置顶是公认的绕过办法。
+  win.setAlwaysOnTop(true)
+  win.focus()
+  win.moveTop()
+  win.setAlwaysOnTop(false)
 }
 
 function createTray(): void {
   tray = new Tray(nativeImage.createFromPath(resourcePath('tray.png')))
-  tray.setToolTip(`错题本 · 按 ${getSettings().hotkey} 截图录入`)
+  updateTrayTooltip()
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: '截图录入', click: () => void doCapture() },
@@ -223,6 +245,16 @@ function createTray(): void {
   tray.on('click', () => showMain())
 }
 
+/**
+ * 更新托盘图标的 tooltip，显示当前热键。
+ * 在托盘创建时和热键变更时调用。
+ */
+function updateTrayTooltip(): void {
+  if (tray && !tray.isDestroyed()) {
+    tray.setToolTip(`错题本 · 按 ${getSettings().hotkey} 截图录入`)
+  }
+}
+
 /* ────────────── 采集 ────────────── */
 
 async function doCapture(): Promise<CapturePayload | null> {
@@ -230,13 +262,30 @@ async function doCapture(): Promise<CapturePayload | null> {
   const payload = await startCapture()
   if (!payload) {
     logLine('hotkey', '截图返回 null')
+    // 截图失败时，主窗口通常在托盘里看不到，唯一的 Toast 提示不可见。
+    // 通过桌面通知窗口推送错误信息，用户能在右下角看到提示卡片。
+    pushNotifyState([{
+      id: `capture-error-${Date.now()}`,
+      status: 'error',
+      error: '截图失败：未获取到屏幕内容或用户取消了框选'
+    }])
     return null
   }
-  logLine('hotkey', `截图成功: ${payload.imageAbsPath}`)
-  lastCapture = payload
-  // 刻意**不**把主窗口弹出来：截图应该能在不打开软件的情况下完成，
-  // 反馈交给桌面通知窗（右下角那张卡片）。
-  mainWindow?.webContents.send(IPC.captureCaptured, payload)
+
+  // 防止快速连按两次热键时，同一个 payload 被推给渲染层两次。
+  // startCapture() 会把并发调用折叠成同一个 Promise，但两个 doCapture() 都会拿到
+  // 结果并各自 emit captureCaptured → 渲染层建两个任务、两次 LLM 调用。
+  // 如果 payload 的路径跟上一次相同，说明这是加入 inflight 的调用方，跳过推送。
+  const isDuplicate = lastCapture?.imageAbsPath === payload.imageAbsPath
+  if (!isDuplicate) {
+    logLine('hotkey', `截图成功: ${payload.imageAbsPath}`)
+    lastCapture = payload
+    // 刻意**不**把主窗口弹出来：截图应该能在不打开软件的情况下完成，
+    // 反馈交给桌面通知窗（右下角那张卡片）。
+    mainWindow?.webContents.send(IPC.captureCaptured, payload)
+  } else {
+    logLine('hotkey', `截图重复（inflight 合并）: ${payload.imageAbsPath}`)
+  }
   return payload
 }
 
@@ -328,9 +377,53 @@ function registerHandlers(): void {
     return null
   })
 
-  handle(IPC.reviewDue, async () => {
-    const sums = await listMistakes({})
-    return sums.filter((s) => isDue(s.review))
+  handle(IPC.reviewQuery, async (q: ReviewQuery): Promise<ReviewBatch> => {
+    // 范围过滤交给 store（它刚修好「多字段模糊搜索」，比我在这里重做一遍强）；
+    // 到期判断、排序、分批在 JS 侧做 —— 数据量在几千级，足够快。
+    const scoped = await listMistakes(q.scope ?? {})
+
+    const filtered = scoped.filter((s) => {
+      if (q.onlyWithImage && !s.imagePath) return false
+      if (q.mode === 'due' && !isDue(s.review)) return false
+      return true
+    })
+
+    switch (q.order) {
+      case 'due':
+        // 最该复习的在前（没有 next 的排最前）
+        filtered.sort((a, b) => (a.review.next ?? '').localeCompare(b.review.next ?? ''))
+        break
+      case 'created':
+        filtered.sort((a, b) => b.created.localeCompare(a.created))
+        break
+      case 'difficulty':
+        filtered.sort((a, b) => (b.level ?? 0) - (a.level ?? 0))
+        break
+      case 'random':
+        for (let i = filtered.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[filtered[i], filtered[j]] = [filtered[j], filtered[i]]
+        }
+        break
+    }
+
+    const total = filtered.length
+    const limit = q.limit > 0 ? q.limit : total
+    // offset 超出总数就绕回开头 —— 「换一批」转到尾了要能从头继续，而不是给一片空白
+    const offset = total > 0 ? q.offset % total : 0
+    const items = filtered.slice(offset, offset + limit)
+
+    logLine(
+      'review',
+      `复习查询：范围 ${JSON.stringify(q.scope ?? {})} · ${q.mode} · ${q.order} · 命中 ${total} · 本批 ${offset + 1}-${offset + items.length}`
+    )
+
+    return {
+      items,
+      total,
+      from: items.length > 0 ? offset + 1 : 0,
+      to: offset + items.length
+    }
   })
 
   handle(IPC.reviewGrade, async (id: string, grade: Grade) => {
@@ -341,7 +434,7 @@ function registerHandlers(): void {
   })
 
   handle(IPC.statsOverview, () => {
-    const db = openIndex()
+    const { db } = openIndex()
     initSchema(db)
     return statsOverview(db)
   })
@@ -407,7 +500,15 @@ function registerHandlers(): void {
       if (!registerHotkey(next.hotkey, () => void doCapture())) {
         throw new Error(`热键 ${next.hotkey} 注册失败，可能已被其他程序占用`)
       }
+      // 托盘 tooltip 也要跟上，否则提示信息还停在旧热键
+      updateTrayTooltip()
     }
+
+    // 开机自启变更时同步到系统登录项
+    if (patch.autoStart !== undefined) {
+      applyAutoStart(!!patch.autoStart)
+    }
+
     return next
   })
 }
@@ -491,64 +592,94 @@ async function runSelfTest(imagePath?: string): Promise<number> {
 
 registerAssetScheme()
 
-app.whenReady().then(async () => {
-  // 把版本号和运行形态写进日志：出问题时第一件事就是确认「你跑的到底是哪个版本」
-  logLine(
-    'app',
-    `应用启动 v${app.getVersion()}${app.isPackaged ? '（打包版）' : '（开发）'} hotkey=${getSettings().hotkey}`
-  )
-  ensureDirs()
-  fs.mkdirSync(getTempDir(), { recursive: true })
+// 单实例锁：防止第二个进程启动时产生两个托盘图标、两套热键、两个同时写数据库的进程
+const gotTheLock = app.requestSingleInstanceLock()
 
-  // 自检模式：不开窗口，跑完即退出
-  const argv = process.argv.slice(1)
-  const selfIdx = argv.indexOf('--selftest')
-  if (selfIdx >= 0) {
-    const next = argv[selfIdx + 1]
-    const image = next && !next.startsWith('--') ? next : undefined
-    app.exit(await runSelfTest(image))
-    return
-  }
+if (!gotTheLock) {
+  // 没拿到锁说明已经有实例在跑，直接退出
+  app.quit()
+} else {
+  // 有人尝试启动第二个实例时，把我们的窗口拉到前台
+  app.on('second-instance', () => {
+    showMain()
+  })
 
-  handleAssetProtocol()
-  const db = openIndex()
-  initSchema(db)
+  app.whenReady().then(async () => {
+    // 把版本号和运行形态写进日志：出问题时第一件事就是确认「你跑的到底是哪个版本」
+    logLine(
+      'app',
+      `应用启动 v${app.getVersion()}${app.isPackaged ? '（打包版）' : '（开发）'} hotkey=${getSettings().hotkey}`
+    )
+    ensureDirs()
+    fs.mkdirSync(getTempDir(), { recursive: true })
 
-  registerHandlers()
-  createWindow()
-  createTray()
-  setupHotkey()
-  initNotifyWindow()
+    // 自检模式：不开窗口，跑完即退出
+    const argv = process.argv.slice(1)
+    const selfIdx = argv.indexOf('--selftest')
+    if (selfIdx >= 0) {
+      const next = argv[selfIdx + 1]
+      const image = next && !next.startsWith('--') ? next : undefined
+      app.exit(await runSelfTest(image))
+      return
+    }
 
-  // 监听通知窗口的按钮操作，转发给主窗口渲染进程
-  const notifyWin = getNotifyWindow()
-  if (notifyWin) {
-    notifyWin.webContents.on('did-finish-load', () => {
-      ipcMain.on(IPC.notifyAction, (_event, payload: { taskId: string; action: string }) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.notifyCommand, payload)
-        }
+    handleAssetProtocol()
+    // openIndex 现在会在索引损坏时自愈（改名为 .bad-<时间戳> 后新建），
+    // 并用 needsRebuild 告诉我们「这份索引是空的，得从 Markdown 重建」。
+    const { db, needsRebuild } = openIndex()
+    initSchema(db)
+    if (needsRebuild) {
+      logLine('index', '索引不可用，已改名存档并重建 —— Markdown 文件未受影响')
+    }
+
+    registerHandlers()
+    createWindow()
+    createTray()
+    setupHotkey()
+    initNotifyWindow()
+
+    // 监听通知窗口的按钮操作，转发给主窗口渲染进程
+    const notifyWin = getNotifyWindow()
+    if (notifyWin) {
+      notifyWin.webContents.on('did-finish-load', () => {
+        ipcMain.on(IPC.notifyAction, (_event, payload: { taskId: string; action: string }) => {
+          // 「编辑」是要人动手的，必须先把窗口放到最前 —— 否则 Composer 确实打开了，
+          // 但窗口还藏在托盘里，用户什么都看不到（这正是它之前的表现）。
+          // 保存 / 丢弃是后台动作，刻意不打扰。
+          if (payload?.action === 'edit') showMain()
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send(IPC.notifyCommand, payload)
+          }
+        })
       })
+    }
+
+    // 处理渲染进程推送的任务状态
+    ipcMain.handle(IPC.notifySync, (_event, tasks: Array<{ id: string; status: string }>) => {
+      pushNotifyState(tasks as any)
+      return null
     })
-  }
 
-  // 处理渲染进程推送的任务状态
-  ipcMain.handle(IPC.notifySync, (_event, tasks: Array<{ id: string; status: string }>) => {
-    pushNotifyState(tasks as any)
-    return null
+    // 应用启动时同步一次 auto-start 设置
+    applyAutoStart(getSettings().autoStart ?? false)
+
+    // 索引为空（首次运行，或刚从损坏中恢复）→ 从 Markdown 全量重建。
+    // 文件才是真相源，索引坏了从来不是事故。
+    try {
+      if (needsRebuild || countRows(db) === 0) {
+        const r = await rebuildIndex()
+        logLine('index', `索引重建完成，共 ${r.count} 条`)
+      }
+    } catch (e) {
+      console.warn('[index] 初始重建跳过：', e)
+      logLine('index', `初始重建失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
   })
-
-  // 索引为空 → 从 Markdown 全量重建（文件才是真相源）
-  try {
-    if (countRows(db) === 0) await rebuildIndex()
-  } catch (e) {
-    console.warn('[index] 初始重建跳过：', e)
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
+}
 
 app.on('before-quit', () => {
   quitting = true

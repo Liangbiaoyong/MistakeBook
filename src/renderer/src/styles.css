@@ -209,6 +209,12 @@
   @apply my-3 overflow-x-auto overflow-y-hidden py-1;
 }
 
+/* ── 书库卡片虚拟化：跳过屏幕外卡片的布局计算（缺陷 12） ── */
+.cu-virtualize-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
+}
+
 /* ── 动效降级：尊重系统偏好 ── */
 @media (prefers-reduced-motion: reduce) {
   *,

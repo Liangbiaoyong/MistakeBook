@@ -7,6 +7,7 @@ import type { Extraction, MistakeBody } from '@shared/types'
 import { QUESTION_TYPES, ERROR_TYPES } from '@shared/types'
 import Markdown from '../components/Markdown'
 import { cuCard, cuCtaPrimary, cuCtaGhost, cuNotice, Icon } from '../design/tokens'
+import { useModal } from '../lib/useModal'
 
 interface ComposerProps {
   payload: CapturePayload
@@ -46,10 +47,17 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
     body: { question: '', myThought: '', solution: '', cause: '' }
   })
 
+  const [hasChanges, setHasChanges] = useState(false)
+
+  const { containerRef, trapFocus } = useModal({
+    open: true,
+    onClose,
+    confirmOnEsc: hasChanges
+  })
+
   /* ── 调用 LLM 提取（仅在未提供 initial 时执行） ──────────────────────────────────── */
   useEffect(() => {
     if (initial) {
-      // 已有预填数据，跳过提取
       setExtraction(initial)
       setForm({
         subject: initial.subject,
@@ -105,6 +113,7 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
   const update = useCallback(
     <K extends keyof FormState>(key: K, value: FormState[K]) => {
       setForm(prev => ({ ...prev, [key]: value }))
+      setHasChanges(true)
     },
     []
   )
@@ -115,6 +124,7 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
         ...prev,
         body: { ...prev.body, [key]: value }
       }))
+      setHasChanges(true)
     },
     []
   )
@@ -156,7 +166,20 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
 
   /* ── 渲染 ──────────────────────────────────────── */
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur" role="dialog" aria-modal="true" aria-label="录入确认">
+    <div
+      ref={containerRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur"
+      role="dialog"
+      aria-modal="true"
+      aria-label="录入确认"
+      onKeyDown={(e) => {
+        trapFocus(e)
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault()
+          if (!saving && !loading) void handleSave()
+        }
+      }}
+    >
       <div className={`${cuCard()} relative max-h-[90vh] w-full max-w-3xl overflow-y-auto p-8`}>
         {/* 进度条（仅在识别中显示） */}
         {extracting && <div className="cu-progress-bar" />}
@@ -452,6 +475,7 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
             )}
           </button>
         </div>
+        <div className="mt-2 text-right text-[11px] text-white/30">Ctrl+Enter 保存</div>
       </div>
     </div>
   )

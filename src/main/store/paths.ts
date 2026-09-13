@@ -27,6 +27,43 @@ export function getTempDir(): string {
   return join(getUserDataDir(), 'tmp')
 }
 
+export interface VaultStatus {
+  dir: string
+  configured: string
+  exists: boolean
+}
+
+/**
+ * 获取 vault 状态。
+ * 如果配置了自定义路径但不存在，返回该路径（exists=false）
+ * 这样调用方可以清楚地知道问题所在
+ */
+export function getVaultStatus(): VaultStatus {
+  const defaultDir = join(app.getPath('documents'), 'MistakeBook')
+
+  try {
+    const configPath = getConfigPath()
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (config.vaultDir) {
+        return {
+          dir: config.vaultDir,
+          configured: config.vaultDir,
+          exists: existsSync(config.vaultDir)
+        }
+      }
+    }
+  } catch {
+    // 忽略配置读取错误，使用默认值
+  }
+
+  return {
+    dir: defaultDir,
+    configured: '',
+    exists: existsSync(defaultDir)
+  }
+}
+
 export function getVaultDir(): string {
   if (cachedVaultDir) return cachedVaultDir
 
@@ -36,7 +73,7 @@ export function getVaultDir(): string {
     const configPath = getConfigPath()
     if (existsSync(configPath)) {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-      if (config.vaultDir && existsSync(config.vaultDir)) {
+      if (config.vaultDir) {
         cachedVaultDir = config.vaultDir
         return config.vaultDir
       }
@@ -82,16 +119,25 @@ export function assetAbsPath(rel: string): string {
 }
 
 export function ensureDirs(): void {
-  const dirs = [
-    getVaultDir(),
-    mistakesDir(),
-    assetsDir(),
-    getTempDir()
-  ]
+  const vaultStatus = getVaultStatus()
 
-  for (const dir of dirs) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
+  // 如果配置的路径存在，创建子目录
+  if (vaultStatus.exists) {
+    const dirs = [
+      join(vaultStatus.dir, 'mistakes'),
+      join(vaultStatus.dir, 'assets'),
+      getTempDir()
+    ]
+
+    for (const dir of dirs) {
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+      }
     }
+  }
+
+  // 始终创建 temp 目录
+  if (!existsSync(getTempDir())) {
+    mkdirSync(getTempDir(), { recursive: true })
   }
 }

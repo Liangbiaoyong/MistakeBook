@@ -90,9 +90,20 @@ export function mistakeToMarkdown(m: Mistake): string {
   if (m.llm) data.llm = { model: m.llm.model, at: m.llm.at }
   if (m.imagePath) data.image = m.imagePath
 
-  const body = BODY_SECTIONS.filter((s) => (m.body?.[s.key] ?? '').trim().length > 0)
+  // 保留未知的 frontmatter 键
+  if (m._extra) {
+    Object.assign(data, m._extra)
+  }
+
+  // 构建已知的 body 节
+  const knownSections = BODY_SECTIONS.filter((s) => (m.body?.[s.key] ?? '').trim().length > 0)
     .map((s) => `${s.header}\n\n${(m.body[s.key] as string).trim()}`)
-    .join('\n\n')
+
+  // 保留未知的 body 节（来自 _extraBody）
+  const extraSections = m._extraBody ?? []
+
+  const allSections = [...knownSections, ...extraSections]
+  const body = allSections.join('\n\n')
 
   return matter.stringify(body ? `${body}\n` : '', data)
 }
@@ -171,6 +182,20 @@ export function markdownToMistake(raw: string): Mistake {
 
   const reviewRaw = (d.review ?? {}) as Record<string, unknown>
 
+  // 识别未知的 frontmatter 键
+  const KNOWN_KEYS = new Set([
+    'id', 'created', 'updated', 'source', 'subject', 'chapter', 'points',
+    'type', 'level', 'my_answer', 'right_answer', 'error_type', 'status',
+    'confidence', 'review', 'llm', 'image'
+  ])
+
+  const extra: Record<string, unknown> = {}
+  for (const key of Object.keys(d)) {
+    if (!KNOWN_KEYS.has(key)) {
+      extra[key] = d[key]
+    }
+  }
+
   return {
     id,
     created: asString(d.created, new Date().toISOString()),
@@ -193,7 +218,14 @@ export function markdownToMistake(raw: string): Mistake {
     },
     llm: parseLlm(d.llm),
     imagePath: asOptionalString(d.image),
-    body: parseBodySections(parsed.content)
+    ...(() => {
+      const { body, extraBody } = parseBodySections(parsed.content)
+      return {
+        body,
+        _extra: Object.keys(extra).length > 0 ? extra : undefined,
+        _extraBody: extraBody.length > 0 ? extraBody : undefined
+      }
+    })()
   }
 }
 
@@ -205,34 +237,51 @@ function parseLlm(v: unknown): Mistake['llm'] {
   return model && at ? { model, at } : undefined
 }
 
-function parseBodySections(content: string): MistakeBody {
+function parseBodySections(content: string): { body: MistakeBody; extraBody: string[] } {
   const body: MistakeBody = { question: '' }
   const byHeader = new Map(BODY_SECTIONS.map((s) => [s.header, s.key]))
 
   let current: keyof MistakeBody | null = null
   const buf: string[] = []
+  const extraSections: string[] = []
+  let currentExtraHeader: string | null = null
+  const extraBuf: string[] = []
 
   const flush = (): void => {
     if (current && buf.length) {
       const text = buf.join('\n').trim()
       if (text) body[current] = text
+    } else if (currentExtraHeader && extraBuf.length) {
+      const text = extraBuf.join('\n').trim()
+      if (text) extraSections.push(`${currentExtraHeader}\n\n${text}`)
     }
     buf.length = 0
+    extraBuf.length = 0
   }
 
   for (const line of content.split('\n')) {
     // 只认整行的二级标题，避免把正文里的 ## 当成小节
-    const key = byHeader.get(line.trim())
-    if (key) {
+    const trimLine = line.trim()
+    const knownKey = byHeader.get(trimLine)
+
+    if (knownKey) {
       flush()
-      current = key
+      current = knownKey
+      currentExtraHeader = null
+    } else if (trimLine.startsWith('## ') && !byHeader.has(trimLine)) {
+      // 未知的二级标题
+      flush()
+      current = null
+      currentExtraHeader = trimLine
     } else if (current) {
       buf.push(line)
+    } else if (currentExtraHeader) {
+      extraBuf.push(line)
     }
   }
   flush()
 
-  return body
+  return { body, extraBody: extraSections }
 }
 
 /** 错题相对仓库根的路径 */

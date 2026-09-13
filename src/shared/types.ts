@@ -65,6 +65,10 @@ export interface Mistake {
   /** 相对 vault 的图片路径，如 assets/2026-09-13-a3f2.png */
   imagePath?: string
   body: MistakeBody
+  /** 未知的 frontmatter 键（往返保留用，不影响业务逻辑） */
+  _extra?: Record<string, unknown>
+  /** 未知的 body 节（往返保留用，不影响业务逻辑） */
+  _extraBody?: string[]
 }
 
 /** 列表用的轻量视图 */
@@ -195,6 +199,53 @@ export interface TopicRank {
 export const GRADES = ['again', 'hard', 'good', 'easy'] as const
 export type Grade = (typeof GRADES)[number]
 
+/* ────────────── 复习会话 ────────────── */
+
+/** 出题顺序 */
+export const REVIEW_ORDERS = ['due', 'random', 'created', 'difficulty'] as const
+export type ReviewOrder = (typeof REVIEW_ORDERS)[number]
+
+/** 复习模式：只过到期的，还是忽略到期日主动刷某个范围 */
+export const REVIEW_MODES = ['due', 'all'] as const
+export type ReviewMode = (typeof REVIEW_MODES)[number]
+
+/**
+ * 一次复习请求。
+ *
+ * 「换一批」之所以以前没用，是因为它没有"批"的概念 —— 每次都是把全部到期项
+ * 重新查一遍再跳回第一题。这里用 limit/offset 把批次显式化。
+ */
+export interface ReviewQuery {
+  /** 范围过滤，复用列表页的筛选结构 */
+  scope?: ListFilter
+  mode: ReviewMode
+  order: ReviewOrder
+  /** 一批多少题；0 表示不限 */
+  limit: number
+  /** 从第几题开始取（「换一批」就是 offset += limit） */
+  offset: number
+  /** 只看带原图的 */
+  onlyWithImage?: boolean
+}
+
+export interface ReviewBatch {
+  items: MistakeSummary[]
+  /** 命中范围的总数（不受 limit/offset 影响），用于「第 x–y 题 / 共 n 题」 */
+  total: number
+  /** 本批实际是第一题到第几题 */
+  from: number
+  to: number
+}
+
+/** 复习偏好，持久化到设置里，下次打开保持 */
+export interface ReviewPrefs {
+  scope?: ListFilter
+  mode: ReviewMode
+  order: ReviewOrder
+  limit: number
+  onlyWithImage?: boolean
+}
+
 /* ────────────── 通用 ────────────── */
 
 /** 杂项应用设置（与模型配置分开） */
@@ -207,6 +258,10 @@ export interface AppSettings {
   statsWindowDays: number
   /** 识别成功后自动保存等待秒数（0 = 不自动保存） */
   autoSaveSeconds?: number
+  /** 开机自启。默认 false，常驻托盘时应该允许用户设置为 true */
+  autoStart?: boolean
+  /** 复习偏好（范围 / 模式 / 顺序 / 批大小），下次打开保持 */
+  reviewPrefs?: ReviewPrefs
 }
 
 export interface Result<T> {

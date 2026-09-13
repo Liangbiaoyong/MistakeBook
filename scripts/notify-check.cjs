@@ -65,6 +65,20 @@ app.whenReady().then(async () => {
   const allPass = checks.every(([, p]) => p)
   console.log('[notify] 断言结论:', allPass ? 'PASS' : 'FAIL')
 
+  // 测试低置信度场景
+  win.webContents.send('notify:state', [
+    {
+      id: 't5', status: 'ready', remaining: 30, total: 30,
+      extraction: { subject: '线代', points: ['矩阵特征值'], confidence: 0.62 },
+      payload: { imageAbsPath: 'x' }
+    }
+  ])
+  await wait(1000)
+  const lowConfText = await win.webContents.executeJavaScript('document.body.innerText')
+  const lowConfFlat = lowConfText.replace(/\s+/g, ' ')
+  const lowConfPass = lowConfFlat.includes('置信度 62%') && lowConfFlat.includes('请核对') && lowConfFlat.includes('等你确认后保存')
+  console.log(`[notify] ${lowConfPass ? '✓' : '✗'} 低置信度显示（62%）`)
+
   // 出一张能代表实际观感的图：只留两条任务，并把通知叠在一张白底 PDF 页面上
   // —— 顺便证明「白底也可读」不是空话。
   win.webContents.send('notify:state', [

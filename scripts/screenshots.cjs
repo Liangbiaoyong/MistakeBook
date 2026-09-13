@@ -107,7 +107,15 @@ ipcMain.handle('vault:get', () => ok('D:/Documents/MistakeBook'))
 ipcMain.handle('settings:get', () => ok({ hotkey: 'Alt+Shift+A', statsWindowDays: 30, examDate: '2026-12-26' }))
 ipcMain.handle('mistake:list', () => ok(LIST))
 ipcMain.handle('mistake:get', () => ok(FULL))
-ipcMain.handle('review:due', () => ok(LIST.slice(0, 3)))
+// 复习页现在走 review:query（有范围/批次概念），按 limit/offset 切片
+ipcMain.handle('review:query', (_e, q) => {
+  const list = q?.mode === 'all' ? LIST : LIST.slice(0, 4)
+  const size = q?.limit > 0 ? q.limit : list.length
+  const start = list.length ? (q?.offset ?? 0) % list.length : 0
+  const items = list.slice(start, start + size)
+  return ok({ items, total: list.length, from: items.length ? start + 1 : 0, to: start + items.length })
+})
+ipcMain.handle('review:grade', () => ok(null))
 ipcMain.handle('stats:overview', () => ok(STATS))
 ipcMain.handle('config:listModels', () => ok([]))
 let extractMode = 'slow'

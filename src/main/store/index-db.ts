@@ -11,16 +11,42 @@ let dbInstance: DatabaseSync | null = null
 
 /**
  * 打开或创建索引数据库
+ * 遇到损坏时自动恢复：重命名旧文件，创建新数据库，返回标记告知需要重建
  */
-export function openIndex(): DatabaseSync {
-  if (dbInstance) return dbInstance
+export function openIndex(): { db: DatabaseSync; needsRebuild: boolean } {
+  if (dbInstance) return { db: dbInstance, needsRebuild: false }
 
-  // 落盘到 userData/index.db。索引是可重建的派生物，但没必要每次启动都重扫。
-  dbInstance = new DatabaseSync(getIndexPath())
+  const dbPath = getIndexPath()
+  let needsRebuild = false
+
+  try {
+    // 尝试打开现有数据库
+    dbInstance = new DatabaseSync(dbPath)
+    // 尝试读取以验证数据库是否可访问
+    dbInstance.prepare('SELECT 1 FROM mistakes LIMIT 1')
+  } catch (e) {
+    // 数据库损坏或不存在，创建新的
+    if (dbInstance) {
+      try { dbInstance.close() } catch {}
+      dbInstance = null
+    }
+
+    // 如果旧文件存在，重命名以保留
+    const { existsSync, renameSync } = require('node:fs')
+    if (existsSync(dbPath)) {
+      const timestamp = Date.now()
+      renameSync(dbPath, `${dbPath}.bad-${timestamp}`)
+    }
+
+    // 创建新数据库
+    dbInstance = new DatabaseSync(dbPath)
+    needsRebuild = true
+  }
+
   dbInstance.exec('PRAGMA journal_mode = WAL')
   initSchema(dbInstance)
 
-  return dbInstance
+  return { db: dbInstance, needsRebuild }
 }
 
 /**
@@ -169,13 +195,13 @@ export function querySummaries(db: DatabaseSync, filter?: ListFilter): MistakeSu
   }
 
   if (filter?.chapter) {
-    conditions.push('EXISTS (SELECT 1 FROM chapters c WHERE c.mistake_id = m.id AND c.chapter = ?)')
-    params.push(filter.chapter)
+    conditions.push('EXISTS (SELECT 1 FROM chapters c WHERE c.mistake_id = m.id AND c.chapter LIKE ?)')
+    params.push(`%${filter.chapter}%`)
   }
 
   if (filter?.point) {
-    conditions.push('EXISTS (SELECT 1 FROM points p WHERE p.mistake_id = m.id AND p.point = ?)')
-    params.push(filter.point)
+    conditions.push('EXISTS (SELECT 1 FROM points p WHERE p.mistake_id = m.id AND p.point LIKE ?)')
+    params.push(`%${filter.point}%`)
   }
 
   if (filter?.errorType) {
@@ -189,8 +215,17 @@ export function querySummaries(db: DatabaseSync, filter?: ListFilter): MistakeSu
   }
 
   if (filter?.q) {
-    conditions.push('m.question LIKE ?')
-    params.push(`%${filter.q}%`)
+    conditions.push(`(
+      m.question LIKE ? OR
+      m.my_thought LIKE ? OR
+      m.solution LIKE ? OR
+      m.cause LIKE ? OR
+      m.source LIKE ? OR
+      EXISTS (SELECT 1 FROM points p WHERE p.mistake_id = m.id AND p.point LIKE ?) OR
+      EXISTS (SELECT 1 FROM chapters c WHERE c.mistake_id = m.id AND c.chapter LIKE ?)
+    )`)
+    const likePattern = `%${filter.q}%`
+    params.push(likePattern, likePattern, likePattern, likePattern, likePattern, likePattern, likePattern)
   }
 
   if (conditions.length > 0) {
@@ -274,19 +309,22 @@ export function statsOverview(db: DatabaseSync): StatsOverview {
     count: Number(row.count)
   }))
 
-  // 最近 7 天每日新增
+  // 使用JS获取本地日期，而不是SQLite的date('now')
+  const localDate = getLocalDate()
+
+  // 最近 7 天每日新增（使用本地日期）
   const daily = db.prepare(`
     SELECT date(created) as date, COUNT(*) as count
     FROM mistakes
-    WHERE created >= date('now', '-7 days')
+    WHERE created >= date(?, '-7 days')
     GROUP BY date(created)
     ORDER BY date ASC
-  `).all() as { date: string; count: number }[]
+  `).all(localDate) as { date: string; count: number }[]
 
-  // 待复习数量（next <= 今天）
+  // 待复习数量（使用本地日期）
   const dueCount = (db.prepare(
-    'SELECT COUNT(*) as cnt FROM mistakes WHERE next_review IS NOT NULL AND next_review <= date(\'now\')'
-  ).get() as { cnt: number }).cnt
+    'SELECT COUNT(*) as cnt FROM mistakes WHERE next_review IS NOT NULL AND next_review <= ?'
+  ).get(localDate) as { cnt: number }).cnt
 
   return {
     total,
@@ -298,6 +336,17 @@ export function statsOverview(db: DatabaseSync): StatsOverview {
     daily,
     dueCount
   }
+}
+
+/**
+ * 获取本地日期 YYYY-MM-DD 格式
+ */
+function getLocalDate(): string {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
 /**

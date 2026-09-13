@@ -16,6 +16,8 @@ import type {
   ProviderConfig,
   PublicModelConfig,
   Result,
+  ReviewBatch,
+  ReviewQuery,
   StatsOverview,
   TopicRank
 } from './types'
@@ -39,7 +41,7 @@ export const IPC = {
   mistakeUpdate: 'mistake:update',
   mistakeDelete: 'mistake:delete',
 
-  reviewDue: 'review:due',
+  reviewQuery: 'review:query',
   reviewGrade: 'review:grade',
 
   statsOverview: 'stats:overview',
@@ -99,7 +101,8 @@ export interface Api {
   update(id: string, patch: Partial<Mistake>): Promise<Result<null>>
   remove(id: string): Promise<Result<null>>
 
-  due(): Promise<Result<MistakeSummary[]>>
+  /** 按范围 / 模式 / 顺序 / 批次取一组复习题目（「换一批」靠 offset 前进） */
+  reviewQuery(query: ReviewQuery): Promise<Result<ReviewBatch>>
   grade(id: string, grade: Grade): Promise<Result<null>>
 
   stats(): Promise<Result<StatsOverview>>

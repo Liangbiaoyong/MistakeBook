@@ -189,19 +189,41 @@
           const knowledge = task.extraction.points?.[0] || ''
           const summary = knowledge ? `${subject} · ${knowledge}` : subject
           const remaining = task.remaining || 0
+          const confidence = task.extraction.confidence ?? null
+          const isLowConfidence = confidence !== null && confidence < 0.75
 
-          card.innerHTML = `
-            <div class="status-text">${escapeHtml(summary)}</div>
-            <div class="countdown-text" id="countdown-${task.id}">${remaining} 秒后自动保存</div>
-            <div class="countdown-bar">
-              <div class="countdown-bar-fill" id="bar-${task.id}" style="width: ${(remaining / 30) * 100}%"></div>
-            </div>
-            <div class="btn-row">
-              <button class="btn btn-primary" data-action="save" data-task-id="${task.id}">保存</button>
-              <button class="btn btn-ghost" data-action="edit" data-task-id="${task.id}">编辑</button>
-              <button class="btn btn-ghost" data-action="discard" data-task-id="${task.id}">丢弃</button>
-            </div>
-          `
+          // 进度条分母：优先用 total，否则回退到 remaining（避免写死 30 导致溢出）
+          const total = task.total || remaining || 1
+          const widthPercent = Math.min(100, Math.max(0, (remaining / total) * 100))
+
+          if (isLowConfidence) {
+            // 低置信度：显示警告，不渲染倒计时
+            card.innerHTML = `
+              <div class="status-text">${escapeHtml(summary)}</div>
+              <div style="color: #ff6b6b; font-size: 13px; margin: 4px 0;">置信度 ${Math.round(confidence * 100)}%，请核对</div>
+              <div class="countdown-text">等你确认后保存</div>
+              <div class="btn-row">
+                <button class="btn btn-primary" data-action="save" data-task-id="${task.id}">保存</button>
+                <button class="btn btn-ghost" data-action="edit" data-task-id="${task.id}">编辑</button>
+                <button class="btn btn-ghost" data-action="discard" data-task-id="${task.id}">丢弃</button>
+              </div>
+            `
+          } else {
+            // 正常置信度：显示倒计时和进度条
+            const confidenceText = confidence !== null ? ` · 置信度 ${Math.round(confidence * 100)}%` : ''
+            card.innerHTML = `
+              <div class="status-text">${escapeHtml(summary)}<span class="status-secondary">${confidenceText}</span></div>
+              <div class="countdown-text" id="countdown-${task.id}">${remaining} 秒后自动保存</div>
+              <div class="countdown-bar">
+                <div class="countdown-bar-fill" id="bar-${task.id}" data-total="${total}" style="width: ${widthPercent}%"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary" data-action="save" data-task-id="${task.id}">保存</button>
+                <button class="btn btn-ghost" data-action="edit" data-task-id="${task.id}">编辑</button>
+                <button class="btn btn-ghost" data-action="discard" data-task-id="${task.id}">丢弃</button>
+              </div>
+            `
+          }
         } else if (task.status === 'saving') {
           card.innerHTML = `
             <div class="status-text">正在保存...</div>
@@ -258,7 +280,11 @@
 
           const bar = document.getElementById(`bar-${taskId}`)
           if (bar) {
-            bar.style.width = `${(remaining / 30) * 100}%`
+            // 进度条分母：从任务数据中读取 total（如果可用）
+            // 注意：这里需要从 DOM 中存储的任务数据或从窗口数据中获取
+            // 简化方案：使用 remaining 作为分子，从更新逻辑中直接读取 total
+            const total = bar.dataset.total || remaining || 1
+            bar.style.width = `${Math.min(100, Math.max(0, (remaining / total) * 100))}%`
           }
         }
       })

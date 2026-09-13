@@ -14,6 +14,8 @@ export interface CaptureTask {
   extraction?: Extraction
   error?: string
   remaining?: number
+  /** 保存成功后返回的错题 id，用于撤销 */
+  savedId?: string
 }
 
 interface CaptureWidgetProps {
@@ -22,9 +24,11 @@ interface CaptureWidgetProps {
   onEdit: (id: string) => void
   onDiscard: (id: string) => void
   onRetry: (id: string) => void
+  onUndoSave: (taskId: string, savedId: string) => void
+  onNavigateSettings: () => void
 }
 
-export default function CaptureWidget({ tasks, onSave, onEdit, onDiscard, onRetry }: CaptureWidgetProps): React.JSX.Element {
+export default function CaptureWidget({ tasks, onSave, onEdit, onDiscard, onRetry, onUndoSave, onNavigateSettings }: CaptureWidgetProps): React.JSX.Element {
   if (tasks.length === 0) return <></>
 
   return (
@@ -37,6 +41,8 @@ export default function CaptureWidget({ tasks, onSave, onEdit, onDiscard, onRetr
           onEdit={onEdit}
           onDiscard={onDiscard}
           onRetry={onRetry}
+          onUndoSave={onUndoSave}
+          onNavigateSettings={onNavigateSettings}
         />
       ))}
     </div>
@@ -48,15 +54,19 @@ function TaskCard({
   onSave,
   onEdit,
   onDiscard,
-  onRetry
+  onRetry,
+  onUndoSave,
+  onNavigateSettings
 }: {
   task: CaptureTask
   onSave: (id: string) => void
   onEdit: (id: string) => void
   onDiscard: (id: string) => void
   onRetry: (id: string) => void
+  onUndoSave: (taskId: string, savedId: string) => void
+  onNavigateSettings: () => void
 }): React.JSX.Element {
-  const { id, status, extraction, error, remaining, payload } = task
+  const { id, status, extraction, error, remaining, payload, savedId } = task
 
   return (
     <div
@@ -91,8 +101,8 @@ function TaskCard({
           )}
 
           {/* saved 状态 */}
-          {status === 'saved' && (
-            <SavedState />
+          {status === 'saved' && savedId && (
+            <SavedState onUndo={() => onUndoSave(id, savedId)} />
           )}
 
           {/* error 状态 */}
@@ -101,6 +111,7 @@ function TaskCard({
               error={error}
               onRetry={() => onRetry(id)}
               onDiscard={() => onDiscard(id)}
+              onNavigateSettings={onNavigateSettings}
             />
           )}
         </div>
@@ -135,8 +146,6 @@ function TaskCard({
           </button>
         </div>
       )}
-
-      {/* error 状态下重试/丢弃按钮在 ErrorState 内部 */}
     </div>
   )
 }
@@ -171,6 +180,8 @@ function ReadyState({
     ? extraction.body.question.slice(0, 120)
     : ''
 
+  const isLowConfidence = extraction.confidence < 0.75
+
   return (
     <div className="space-y-2">
       {/* 科目 · 章节 · 知识点 */}
@@ -182,6 +193,13 @@ function ReadyState({
       {questionHead && (
         <div className="text-sm text-white/90 line-clamp-2">
           <Markdown source={questionHead} className="!p-0 !bg-transparent !border-none" />
+        </div>
+      )}
+
+      {/* 低置信度提示 */}
+      {isLowConfidence && (
+        <div className="text-xs text-sun">
+          置信度 {Math.round(extraction.confidence * 100)}%，请核对后再保存
         </div>
       )}
 
@@ -217,12 +235,21 @@ function SavingState(): React.JSX.Element {
   )
 }
 
-/** 保存成功状态 */
-function SavedState(): React.JSX.Element {
+/** 保存成功状态 — 带撤销按钮 */
+function SavedState({ onUndo }: { onUndo: () => void }): React.JSX.Element {
   return (
-    <div className="flex items-center gap-2">
-      <Icon name="check" className="h-4 w-4 text-mint" />
-      <span className="text-xs text-mint">已保存</span>
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <Icon name="check" className="h-4 w-4 text-mint" />
+        <span className="text-xs text-mint">已保存</span>
+      </div>
+      <button
+        type="button"
+        onClick={onUndo}
+        className={`${cuCtaGhost} !px-2.5 !py-1 !text-[11px] !rounded-full`}
+      >
+        撤销
+      </button>
     </div>
   )
 }
@@ -231,15 +258,30 @@ function SavedState(): React.JSX.Element {
 function ErrorState({
   error,
   onRetry,
-  onDiscard
+  onDiscard,
+  onNavigateSettings
 }: {
   error: string
   onRetry: () => void
   onDiscard: () => void
+  onNavigateSettings: () => void
 }): React.JSX.Element {
+  const hasSettingsHint = error.includes('设置')
+
   return (
     <div className="space-y-3">
-      <div className={`${cuNotice('error')} !px-3 !py-2 text-xs`}>{error}</div>
+      <div className={`${cuNotice('error')} !px-3 !py-2 text-xs`}>
+        <span>{error}</span>
+        {hasSettingsHint && (
+          <button
+            type="button"
+            onClick={onNavigateSettings}
+            className="ml-2 underline text-white/80 hover:text-white"
+          >
+            去设置
+          </button>
+        )}
+      </div>
       <div className="flex gap-2">
         <button
           type="button"

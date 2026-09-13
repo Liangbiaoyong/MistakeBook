@@ -1,7 +1,7 @@
 /**
  * 书库 — 错题列表主屏，支持筛选、详情叠加层、变式生成
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Mistake, MistakeSummary, MistakeBody, ListFilter, ErrorType } from '@shared/types'
 import { STATUSES, ERROR_TYPES } from '@shared/types'
 import PageHeader from '../components/PageHeader'
@@ -12,9 +12,12 @@ import Markdown from '../components/Markdown'
 import { cuCard, cuCtaPrimary, cuCtaGhost, cuNotice, Icon } from '../design/tokens'
 import { statusLabel, statusTone, relativeDay } from '../lib/format'
 import { ACCENT } from '../design/tokens'
+import { useModal } from '../lib/useModal'
 
 interface LibraryProps {
   onCapture: () => void
+  hotkeyHint?: string
+  onNavigateSettings?: () => void
 }
 
 /**
@@ -39,7 +42,17 @@ function withSection(b: MistakeBody, key: keyof MistakeBody, value: string): Mis
   }
 }
 
-export default function Library({ onCapture }: LibraryProps): React.JSX.Element {
+/** 防抖 hook */
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
+export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavigateSettings }: LibraryProps): React.JSX.Element {
   /* ── 数据 ──────────────────────────────────────────── */
   const [items, setItems] = useState<MistakeSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -60,17 +73,20 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
     ...(q && { q })
   }), [subject, status, errorType, chapter, q])
 
+  // 防抖：250ms 后才真正触发请求
+  const debouncedFilter = useDebounced(filter, 250)
+
   const subjects = useMemo(() => {
     const set = new Set(items.map(i => i.subject))
     return Array.from(set).sort()
   }, [items])
 
+  const isFiltering = Object.keys(filter).length > 0
+
   /* ── 详情叠加层 ──────────────────────────────────────── */
   const [detailId, setDetailId] = useState<string | null>(null)
-  /** 详情里的原始截图默认只露一截：整页扫描图会把题目/答案全挤到折叠线以下 */
   const [imageExpanded, setImageExpanded] = useState(false)
 
-  // 换一条错题就收起原图，免得上一张的展开状态被带过来
   useEffect(() => {
     setImageExpanded(false)
   }, [detailId])
@@ -83,22 +99,29 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
   const [variants, setVariants] = useState<string[]>([])
   const [generating, setGenerating] = useState(false)
 
-  /* ── 数据获取 ──────────────────────────────────────── */
-  const fetchList = useCallback(async () => {
-    setLoading(true)
+  /* ── 数据获取（防抖 + 序列号防过期） ── */
+  const seqRef = useRef(0)
+
+  const fetchList = useCallback(async (filterArg: ListFilter, isInitial = false) => {
+    if (isInitial) {
+      setLoading(true)
+    }
     setError(null)
-    const r = await window.api.list(filter)
+    const seq = ++seqRef.current
+    const r = await window.api.list(filterArg)
+    // 过期响应丢弃
+    if (seq !== seqRef.current) return
     if (r.ok) {
       setItems(r.data ?? [])
     } else {
       setError(r.error ?? '加载失败')
     }
     setLoading(false)
-  }, [filter])
+  }, [])
 
   useEffect(() => {
-    void fetchList()
-  }, [fetchList])
+    void fetchList(debouncedFilter)
+  }, [debouncedFilter, fetchList])
 
   /* ── 详情获取 ──────────────────────────────────────── */
   const fetchDetail = useCallback(async (id: string) => {
@@ -115,12 +138,15 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
     setDetailLoading(false)
   }, [])
 
-  const closeDetail = () => {
-    setDetailId(null)
-    setDetailData(null)
-    setEditing(false)
-    setVariants([])
-  }
+  const { containerRef: detailContainerRef, trapFocus: detailTrapFocus } = useModal({
+    open: detailId !== null,
+    onClose: () => {
+      setDetailId(null)
+      setDetailData(null)
+      setEditing(false)
+      setVariants([])
+    }
+  })
 
   /* ── 编辑 ──────────────────────────────────────── */
   const startEdit = () => {
@@ -135,7 +161,7 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
     if (r.ok) {
       setEditing(false)
       await fetchDetail(detailData.id)
-      await fetchList()
+      await fetchList(debouncedFilter)
     } else {
       setError(r.error ?? '保存失败')
     }
@@ -147,8 +173,11 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
     if (!window.confirm('确定要删除这道错题吗？此操作不可撤销。')) return
     const r = await window.api.remove(detailData.id)
     if (r.ok) {
-      closeDetail()
-      await fetchList()
+      setDetailId(null)
+      setDetailData(null)
+      setEditing(false)
+      setVariants([])
+      await fetchList(debouncedFilter)
     } else {
       setError(r.error ?? '删除失败')
     }
@@ -167,12 +196,21 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
     setGenerating(false)
   }
 
+  /* ── 清除筛选 ── */
+  const clearFilter = () => {
+    setSubject('')
+    setStatus('')
+    setErrorType('')
+    setChapter('')
+    setQ('')
+  }
+
   /* ── 渲染 ──────────────────────────────────────── */
   return (
     <div className="cu-enter">
       <PageHeader
         title="书库"
-        subtitle={`共 ${items.length} 题`}
+        subtitle={isFiltering ? `筛选出 ${items.length} 题` : `共 ${items.length} 题`}
         actions={
           <button type="button" onClick={onCapture} className={`${cuCtaPrimary} !px-4 !py-2 text-sm`}>
             <Icon name="camera" className="h-4 w-4" />
@@ -241,7 +279,18 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
       {/* ── 错误横幅 ─────────────────────────────────── */}
       {error && (
         <div className={`${cuNotice('error')} mb-6 flex items-center justify-between`}>
-          <span>{error}</span>
+          <span>
+            {error}
+            {error.includes('设置') && onNavigateSettings && (
+              <button
+                type="button"
+                onClick={onNavigateSettings}
+                className="ml-2 underline text-white/80 hover:text-white"
+              >
+                去设置
+              </button>
+            )}
+          </span>
           <button
             type="button"
             onClick={() => setError(null)}
@@ -257,25 +306,39 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
       {loading ? (
         <Spinner label="正在加载…" />
       ) : items.length === 0 ? (
-        <Empty
-          icon="library"
-          title="还没有错题"
-          hint="按 Alt+Shift+A 截图录入第一道错题，开始构建你的错题本"
-          action={
-            <button type="button" onClick={onCapture} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
-              <Icon name="camera" className="h-4 w-4" />
-              截图录入
-            </button>
-          }
-        />
+        isFiltering ? (
+          <Empty
+            icon="library"
+            title="没有匹配的错题"
+            hint="试试调整筛选条件，或者清除筛选查看全部错题"
+            action={
+              <button type="button" onClick={clearFilter} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+                清除筛选
+              </button>
+            }
+          />
+        ) : (
+          <Empty
+            icon="library"
+            title="还没有错题"
+            hint={`按 ${hotkeyHint} 截图录入第一道错题，开始构建你的错题本`}
+            action={
+              <button type="button" onClick={onCapture} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
+                <Icon name="camera" className="h-4 w-4" />
+                截图录入
+              </button>
+            }
+          />
+        )
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {items.map(item => (
-            <MistakeCard
-              key={item.id}
-              item={item}
-              onClick={() => void fetchDetail(item.id)}
-            />
+            <div key={item.id} className="cu-virtualize-card">
+              <MistakeCard
+                item={item}
+                onClick={() => void fetchDetail(item.id)}
+              />
+            </div>
           ))}
         </div>
       )}
@@ -283,20 +346,25 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
       {/* ── 详情叠加层 ────────────────────────────────── */}
       {detailId && (
         <div
+          ref={detailContainerRef}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur"
-          onClick={closeDetail}
           role="dialog"
           aria-modal="true"
           aria-label="错题详情"
+          onKeyDown={detailTrapFocus}
         >
           <div
             className={`${cuCard()} relative max-h-[85vh] w-full max-w-3xl overflow-y-auto p-8`}
-            onClick={e => e.stopPropagation()}
           >
             {/* 关闭按钮 */}
             <button
               type="button"
-              onClick={closeDetail}
+              onClick={() => {
+                setDetailId(null)
+                setDetailData(null)
+                setEditing(false)
+                setVariants([])
+              }}
               className="absolute right-4 top-4 cu-btn-sm text-white/60 hover:text-white"
               aria-label="关闭详情"
             >
@@ -307,8 +375,7 @@ export default function Library({ onCapture }: LibraryProps): React.JSX.Element 
               <Spinner label="正在加载…" />
             ) : detailData ? (
               <div className="space-y-6">
-                {/* 原始截图 —— 默认只露顶部一截。整页扫描图不设限的话会占满整个面板，
-                    把 chips 和题目全挤到折叠线以下，得先滚过一页图才看得到真正要看的东西。 */}
+                {/* 原始截图 */}
                 {detailData.imagePath && (
                   <button
                     type="button"

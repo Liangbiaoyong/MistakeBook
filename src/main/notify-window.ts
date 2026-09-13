@@ -20,8 +20,12 @@ export interface NotifyTask {
     subject?: string
     /** 注意是 points —— 与真实的 Extraction 类型保持一致 */
     points?: string[]
+    /** 置信度 0-1 */
+    confidence?: number
   } | null
   remaining?: number
+  /** 初始自动保存延迟秒数（用于进度条分母） */
+  total?: number
   error?: string
   payload?: {
     imageAbsPath: string
@@ -33,10 +37,12 @@ let notifyWin: BrowserWindow | null = null
 /** 当前高度，用于保持右下角锚定 */
 let currentHeight = 170
 
-/** 把窗口钉在主显示器工作区的右下角（高度按内容变） */
+/** 把窗口钉在光标所在显示器工作区的右下角（高度按内容变） */
 function anchorBottomRight(height: number): void {
   if (!notifyWin || notifyWin.isDestroyed()) return
-  const { workArea } = screen.getPrimaryDisplay()
+  // 使用光标所在的显示器，而非主显示器（截图发生在光标所在的显示器）
+  const cursorPoint = screen.getCursorScreenPoint()
+  const { workArea } = screen.getDisplayNearestPoint(cursorPoint)
   const h = Math.min(Math.max(Math.round(height) || MIN_HEIGHT, MIN_HEIGHT), MAX_HEIGHT)
   currentHeight = h
   notifyWin.setBounds({

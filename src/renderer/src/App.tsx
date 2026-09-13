@@ -9,6 +9,7 @@ import Forecast from './pages/Forecast'
 import Settings from './pages/Settings'
 import Toast from './components/Toast'
 import type { CapturePayload } from '@shared/ipc'
+import type { Extraction } from '@shared/types'
 
 export type PageKey = 'library' | 'review' | 'stats' | 'forecast' | 'settings'
 
@@ -26,10 +27,17 @@ export default function App(): React.JSX.Element {
   const [page, setPage] = useState<PageKey>('library')
   const [tasks, setTasks] = useState<CaptureTask[]>([])
   const [editingTask, setEditingTask] = useState<CaptureTask | null>(null)
-  const hotkeyHint = 'Alt+Shift+A'
+  const [hotkeyHint, setHotkeyHint] = useState('Alt+Shift+A')
   const timersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
 
-  /* ── 清理单个任务的定时器 ──────────────────────────────────── */
+  /* ── 启动时读取热键 ── */
+  useEffect(() => {
+    void window.api.settingsGet().then((r) => {
+      if (r.ok && r.data?.hotkey) setHotkeyHint(r.data.hotkey)
+    })
+  }, [])
+
+  /* ── 清理单个任务的定时器 ── */
   const clearTimer = useCallback((taskId: string) => {
     const t = timersRef.current.get(taskId)
     if (t) {
@@ -38,7 +46,7 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  /* ── 组件卸载时清理所有定时器 ──────────────────────────────────── */
+  /* ── 组件卸载时清理所有定时器 ── */
   useEffect(() => {
     return () => {
       timersRef.current.forEach((t) => clearInterval(t))
@@ -46,7 +54,7 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  /* ── 启动自动保存倒计时 ──────────────────────────────────── */
+  /* ── 启动自动保存倒计时 ── */
   const startCountdown = useCallback(
     (taskId: string, delaySeconds: number) => {
       if (delaySeconds <= 0) return
@@ -64,11 +72,9 @@ export default function App(): React.JSX.Element {
 
         if (remaining <= 0) {
           clearTimer(taskId)
-          // 触发自动保存
           setTasks((prev) => {
             const task = prev.find((t) => t.id === taskId)
             if (task && task.status === 'ready' && task.extraction) {
-              // 异步保存
               void saveTask(taskId, task)
               return prev.map((t) =>
                 t.id === taskId ? { ...t, status: 'saving' as const } : t
@@ -85,7 +91,7 @@ export default function App(): React.JSX.Element {
     [clearTimer]
   )
 
-  /* ── 保存任务 ──────────────────────────────────── */
+  /* ── 保存任务 ── */
   const saveTask = useCallback(async (taskId: string, task: CaptureTask) => {
     if (!task.extraction) return
 
@@ -96,15 +102,16 @@ export default function App(): React.JSX.Element {
     })
 
     if (r.ok) {
+      const savedId = r.data?.id
       setTasks((prev) =>
         prev.map((t) =>
-          t.id === taskId ? { ...t, status: 'saved' as const } : t
+          t.id === taskId ? { ...t, status: 'saved' as const, savedId } : t
         )
       )
-      // 2.5s 后自动移除
+      // 8s 后自动移除（给用户撤销窗口）
       setTimeout(() => {
         setTasks((prev) => prev.filter((t) => t.id !== taskId))
-      }, 2500)
+      }, 8000)
     } else {
       setTasks((prev) =>
         prev.map((t) =>
@@ -114,45 +121,90 @@ export default function App(): React.JSX.Element {
     }
   }, [clearTimer])
 
-  /* ── 处理截图完成回调 ──────────────────────────────────── */
-  const handleCaptured = useCallback(
-    (payload: CapturePayload) => {
-      const id = `task-${++taskCounter}`
-      const newTask: CaptureTask = {
-        id,
-        payload,
-        status: 'recognizing'
-      }
+  /* ── 撤销刚保存的错题 ── */
+  const handleUndoSave = useCallback(
+    async (taskId: string, savedId: string) => {
+      clearTimer(taskId)
+      await window.api.remove(savedId)
+      setTasks((prev) => prev.filter((t) => t.id !== taskId))
+    },
+    [clearTimer]
+  )
 
-      setTasks((prev) => [...prev, newTask])
+  /* ── 获取自动保存延迟设置 ── */
+  const getAutoSaveDelay = useCallback(async (): Promise<number> => {
+    const settings = await window.api.settingsGet()
+    return settings.ok ? (settings.data?.autoSaveSeconds ?? 30) : 30
+  }, [])
 
-      // 读取自动保存延迟设置后开始识别
-      void (async () => {
-        const settings = await window.api.settingsGet()
-        const autoSaveDelay = (settings.ok && settings.data?.autoSaveSeconds) || 30
-
-        const r = await window.api.extract(payload.imageAbsPath)
-        if (r.ok && r.data) {
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.id === id ? { ...t, status: 'ready' as const, extraction: r.data!, remaining: autoSaveDelay } : t
-            )
+  /* ── 根据提取结果决定是否启动倒计时 ── */
+  const applyExtractionResult = useCallback(
+    (taskId: string, extraction: Extraction, autoSaveDelay: number) => {
+      if (extraction.confidence < 0.75) {
+        // 低置信度：等待人工核对，不启动倒计时
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, status: 'ready' as const, extraction, remaining: undefined } : t
           )
-          // 启动倒计时
-          startCountdown(id, autoSaveDelay)
-        } else {
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.id === id ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
-            )
+        )
+      } else {
+        // 正常置信度：启动自动保存倒计时
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, status: 'ready' as const, extraction, remaining: autoSaveDelay } : t
           )
+        )
+        if (autoSaveDelay > 0) {
+          startCountdown(taskId, autoSaveDelay)
         }
-      })()
+      }
     },
     [startCountdown]
   )
 
-  /* ── 挂载热键与菜单回调 ──────────────────────────────────── */
+  /* ── 处理截图完成回调 ── */
+  const handleCaptured = useCallback(
+    (payload: CapturePayload) => {
+      // 去重：同一张图不处理两次
+      setTasks((prev) => {
+        if (prev.some((t) => t.payload.imageAbsPath === payload.imageAbsPath)) return prev
+        const id = `task-${++taskCounter}`
+        const newTask: CaptureTask = {
+          id,
+          payload,
+          status: 'recognizing'
+        }
+        return [...prev, newTask]
+      })
+
+      // 找到刚添加的 task id
+      void (async () => {
+        const autoSaveDelay = await getAutoSaveDelay()
+
+        const r = await window.api.extract(payload.imageAbsPath)
+        if (r.ok && r.data) {
+          // 通过 imageAbsPath 找回 task id
+          setTasks((prev) => {
+            const task = prev.find((t) => t.payload.imageAbsPath === payload.imageAbsPath)
+            if (!task) return prev
+            applyExtractionResult(task.id, r.data!, autoSaveDelay)
+            return prev
+          })
+        } else {
+          setTasks((prev) => {
+            const task = prev.find((t) => t.payload.imageAbsPath === payload.imageAbsPath)
+            if (!task) return prev
+            return prev.map((t) =>
+              t.id === task.id ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
+            )
+          })
+        }
+      })()
+    },
+    [getAutoSaveDelay, applyExtractionResult]
+  )
+
+  /* ── 挂载热键与菜单回调 ── */
   useEffect(() => {
     const offCaptured = window.api.onCaptured(handleCaptured)
     const offOpen = window.api.onOpenComposer(() => {
@@ -164,13 +216,13 @@ export default function App(): React.JSX.Element {
     }
   }, [handleCaptured])
 
-  /* ── 截图录入按钮（与热键行为一致） ──────────────────────────────────── */
+  /* ── 截图录入按钮（与热键行为一致） ── */
   const startCapture = useCallback(async () => {
     const r = await window.api.captureStart()
     if (!r.ok && r.error) window.alert(r.error)
   }, [])
 
-  /* ── 任务操作：保存、编辑、丢弃、重试 ──────────────────────────────────── */
+  /* ── 任务操作：保存、编辑、丢弃、重试 ── */
   const handleSave = useCallback(
     (taskId: string) => {
       setTasks((prev) => {
@@ -187,15 +239,19 @@ export default function App(): React.JSX.Element {
     [saveTask]
   )
 
-  const handleEdit = useCallback((taskId: string) => {
-    setTasks((prev) => {
-      const task = prev.find((t) => t.id === taskId)
-      if (task) {
-        setEditingTask(task)
-      }
-      return prev
-    })
-  }, [])
+  const handleEdit = useCallback(
+    (taskId: string) => {
+      clearTimer(taskId)
+      setTasks((prev) => {
+        const task = prev.find((t) => t.id === taskId)
+        if (task) {
+          setEditingTask(task)
+        }
+        return prev
+      })
+    },
+    [clearTimer]
+  )
 
   const handleDiscard = useCallback(
     (taskId: string) => {
@@ -214,49 +270,48 @@ export default function App(): React.JSX.Element {
         )
       )
 
-      // 重新开始识别
       const task = tasks.find((t) => t.id === taskId)
       if (task) {
         void (async () => {
-          const r = await window.api.extract(task.payload.imageAbsPath)
-          if (r.ok && r.data) {
-            const settings = await window.api.settingsGet()
-            const autoSaveDelay = (settings.ok && settings.data?.autoSaveSeconds) || 30
+          const [autoSaveDelay, extractResult] = await Promise.all([
+            getAutoSaveDelay(),
+            window.api.extract(task.payload.imageAbsPath)
+          ])
 
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.id === taskId ? { ...t, status: 'ready' as const, extraction: r.data!, remaining: autoSaveDelay } : t
-              )
-            )
-            startCountdown(taskId, autoSaveDelay)
+          if (extractResult.ok && extractResult.data) {
+            setTasks((prev) => {
+              const currentTask = prev.find((t) => t.id === taskId)
+              if (!currentTask) return prev
+              applyExtractionResult(taskId, extractResult.data!, autoSaveDelay)
+              return prev
+            })
           } else {
             setTasks((prev) =>
               prev.map((t) =>
-                t.id === taskId ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
+                t.id === taskId ? { ...t, status: 'error' as const, error: extractResult.error ?? '识别失败' } : t
               )
             )
           }
         })()
       }
     },
-    [clearTimer, startCountdown, tasks]
+    [clearTimer, getAutoSaveDelay, applyExtractionResult, tasks]
   )
 
-  /* ── 编辑完成回调 ──────────────────────────────────── */
+  /* ── 编辑完成回调 ── */
   const handleComposerClose = useCallback(() => {
     if (editingTask) {
-      // 编辑完成，移除该任务
       setTasks((prev) => prev.filter((t) => t.id !== editingTask.id))
       setEditingTask(null)
     }
   }, [editingTask])
 
-  /* ── 同步任务状态到通知窗口 ──────────────────────────────────── */
+  /* ── 同步任务状态到通知窗口 ── */
   useEffect(() => {
     void window.api.notifySync(tasks)
   }, [tasks])
 
-  /* ── 监听通知窗口的按钮操作 ──────────────────────────────────── */
+  /* ── 监听通知窗口的按钮操作 ── */
   useEffect(() => {
     const offCommand = window.api.onNotifyCommand(({ taskId, action }) => {
       switch (action) {
@@ -320,7 +375,6 @@ export default function App(): React.JSX.Element {
             <Icon name="camera" className="h-4 w-4" />
             截图录入
           </button>
-          {/* 热键单独占一行：跟句子挤在一行会换行换得很难看，还会被窗口底边裁掉 */}
           <div className="text-center text-[11px] leading-relaxed text-white/40">
             <p>任意界面按此键框选</p>
             <kbd className="mt-1.5 inline-block rounded border border-white/20 bg-white/5 px-2 py-1 font-mono text-[10px] text-white/70">
@@ -333,7 +387,13 @@ export default function App(): React.JSX.Element {
       {/* ── 主内容区 ── */}
       <main className="relative flex-1 overflow-y-auto">
         <div className={`${cuContainer} py-8`}>
-          {page === 'library' && <Library onCapture={startCapture} />}
+          {page === 'library' && (
+            <Library
+              onCapture={startCapture}
+              hotkeyHint={hotkeyHint}
+              onNavigateSettings={() => setPage('settings')}
+            />
+          )}
           {page === 'review' && <Review />}
           {page === 'stats' && <Stats />}
           {page === 'forecast' && <Forecast />}
@@ -341,7 +401,7 @@ export default function App(): React.JSX.Element {
         </div>
       </main>
 
-      {/* ── 编辑确认窗（从 CaptureWidget 打开） ── */}
+      {/* ── 编辑确认窗 ── */}
       {editingTask && editingTask.extraction && (
         <Composer
           payload={editingTask.payload}
@@ -357,6 +417,8 @@ export default function App(): React.JSX.Element {
         onEdit={handleEdit}
         onDiscard={handleDiscard}
         onRetry={handleRetry}
+        onUndoSave={handleUndoSave}
+        onNavigateSettings={() => setPage('settings')}
       />
 
       {/* ── 通知提示 ── */}
