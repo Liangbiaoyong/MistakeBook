@@ -5,6 +5,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import type { Mistake, MistakeSummary, ListFilter, StatsOverview } from '@shared/types'
 import { getIndexPath } from './paths'
+import { questionPreview } from './frontmatter'
 
 let dbInstance: DatabaseSync | null = null
 
@@ -227,7 +228,7 @@ export function querySummaries(db: DatabaseSync, filter?: ListFilter): MistakeSu
       next: row.next_review as string | undefined,
       round: row.review_round as number
     },
-    questionHead: (row.question as string).slice(0, 50),
+    questionHead: questionPreview(row.question as string),
     imagePath: row.image as string | undefined
   }))
 }

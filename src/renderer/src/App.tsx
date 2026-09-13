@@ -48,7 +48,7 @@ export default function App(): React.JSX.Element {
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       {/* ── 侧边导航 ── */}
-      <nav className="flex w-[212px] shrink-0 flex-col gap-1 border-r border-white/10 bg-black/60 px-3 py-5">
+      <nav className="flex w-[212px] shrink-0 flex-col gap-1 border-r border-white/10 bg-black/60 px-3 pt-5 pb-4">
         <div className="mb-6 flex items-center gap-2.5 px-2">
           <span
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl"
@@ -86,13 +86,13 @@ export default function App(): React.JSX.Element {
             <Icon name="camera" className="h-4 w-4" />
             截图录入
           </button>
-          <p className="text-center text-[11px] leading-relaxed text-white/40">
-            任意界面按
-            <kbd className="mx-1 rounded border border-white/20 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/70">
+          {/* 热键单独占一行：跟句子挤在一行会换行换得很难看，还会被窗口底边裁掉 */}
+          <div className="text-center text-[11px] leading-relaxed text-white/40">
+            <p>任意界面按此键框选</p>
+            <kbd className="mt-1.5 inline-block rounded border border-white/20 bg-white/5 px-2 py-1 font-mono text-[10px] text-white/70">
               {hotkeyHint}
             </kbd>
-            框选一道题
-          </p>
+          </div>
         </div>
       </nav>
 

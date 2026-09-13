@@ -242,3 +242,31 @@ export function mistakeRelPath(m: Mistake): string {
   const parts = ['mistakes', subject, ...chapters, `${sanitizeSegment(m.id)}.md`]
   return parts.join('/')
 }
+
+/**
+ * 列表预览用的题干预览。
+ *
+ * ⚠ 绝不能直接 `slice(0, n)`：题干里含 `$...$` 公式，硬截会把公式拦腰截断，
+ * 于是 `$` 数量变成奇数、配对不上，渲染时**整段公式会退化成字面文字**（用户可见的 bug）。
+ * 所以截断点必须落在公式之外 —— 宁可少显示几个字。
+ */
+export function questionPreview(text: string, max = 56): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim()
+  if (flat.length <= max) return flat
+
+  let cut = flat.slice(0, max)
+  if (countDollars(cut) % 2 === 1) {
+    const lastOpen = cut.lastIndexOf('$')
+    cut =
+      lastOpen > 0
+        ? cut.slice(0, lastOpen)                       // 退到公式开始之前
+        : flat.slice(0, flat.indexOf('$', max) + 1)    // 公式离得很近，就补到闭合处
+  }
+  return `${cut.trim()}…`
+}
+
+function countDollars(s: string): number {
+  let n = 0
+  for (const ch of s) if (ch === '$') n++
+  return n
+}

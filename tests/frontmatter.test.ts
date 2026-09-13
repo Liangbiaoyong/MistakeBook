@@ -6,6 +6,7 @@ import {
   mistakeToMarkdown,
   newId,
   pickUniqueId,
+  questionPreview,
   sanitizeSegment
 } from '../src/main/store/frontmatter'
 import type { Mistake } from '../src/shared/types'
@@ -192,5 +193,42 @@ describe('mistakeRelPath', () => {
 
   it('没有章节时少一层目录', () => {
     expect(mistakeRelPath({ ...full, chapter: [] })).toBe('mistakes/408/2026-09-13-a3f2.md')
+  })
+})
+
+describe('questionPreview —— 预览不能把公式截断', () => {
+  const countDollars = (s: string): number => (s.match(/\$/g) ?? []).length
+
+  it('短文本原样返回', () => {
+    expect(questionPreview('求 $x^2$ 的导数')).toBe('求 $x^2$ 的导数')
+  })
+
+  it('长文本会被截断并加省略号', () => {
+    const long = '这是一道很长的题目'.repeat(12)
+    const out = questionPreview(long, 20)
+    expect(out.length).toBeLessThanOrEqual(21)
+    expect(out.endsWith('…')).toBe(true)
+  })
+
+  it('绝不会留下落单的 $（这正是「公式变成字面文字」的根因）', () => {
+    // 截断点正好落在 $N_1$ 中间 —— 未修复时会留下奇数个 $
+    const q = '设一棵 $m$ 叉树中有 $N_1$ 个度数为 1 的结点，$N_2$ 个度数为 2 的结点，则该树中共有（ ）个叶结点。'
+    for (let max = 6; max <= 60; max++) {
+      expect(countDollars(questionPreview(q, max)) % 2).toBe(0)
+    }
+  })
+
+  it('宁可少显示，也不露出半截公式', () => {
+    const out = questionPreview('前缀 $abcdefghij$ 后缀', 10)
+    expect(out).not.toContain('$abc')
+    expect(out).toBe('前缀…')
+  })
+
+  it('折叠空白，换行不会打断预览', () => {
+    expect(questionPreview('第一行\n第二行', 40)).toBe('第一行 第二行')
+  })
+
+  it('空值不炸', () => {
+    expect(questionPreview('')).toBe('')
   })
 })
