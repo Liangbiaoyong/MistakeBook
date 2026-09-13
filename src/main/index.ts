@@ -1,7 +1,9 @@
-import { app, BrowserWindow, ipcMain, protocol, dialog, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, protocol, dialog, shell } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import iconPng from '../../resources/icon.png?asset'
+import trayPng from '../../resources/tray.png?asset'
 
 import { IPC } from '@shared/ipc'
 import type { CapturePayload } from '@shared/ipc'
@@ -38,7 +40,7 @@ import {
   upsertProvider,
   getFeatureModel
 } from './config'
-import { startCapture } from './capture/capture'
+import { startCapture, overlayHtmlPath } from './capture/capture'
 import { registerHotkey, unregisterHotkeys } from './capture/hotkey'
 import { chatText, chatVisionJSON, listModels } from './llm/client'
 import { z } from 'zod'
@@ -53,7 +55,10 @@ import { getSettings, updateSettings } from './settings'
 const ASSET_SCHEME = 'cuoti-asset'
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 let lastCapture: CapturePayload | null = null
+/** 只有当真的在退出时才放行窗口关闭，否则关窗口只是收进托盘 */
+let quitting = false
 
 /* ────────────── IPC 包装 ────────────── */
 
@@ -126,6 +131,7 @@ function createWindow(): void {
     backgroundColor: '#000000',
     autoHideMenuBar: true,
     title: '错题本',
+    icon: nativeImage.createFromPath(iconPng),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -137,6 +143,14 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+
+  // 关窗口 = 收进托盘，不退出。常驻是这软件的常态（要随时按热键）。
+  mainWindow.on('close', (e) => {
+    if (!quitting && tray) {
+      e.preventDefault()
+      mainWindow?.hide()
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -152,6 +166,35 @@ function createWindow(): void {
   }
 }
 
+/* ────────────── 托盘 ────────────── */
+
+function showMain(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  mainWindow?.show()
+  mainWindow?.focus()
+}
+
+function createTray(): void {
+  tray = new Tray(nativeImage.createFromPath(trayPng))
+  tray.setToolTip(`错题本 · 按 ${getSettings().hotkey} 截图录入`)
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '截图录入', click: () => void doCapture() },
+      { label: '打开主窗口', click: () => showMain() },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          quitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  // 单击托盘图标唤出主窗口（Windows 上这是用户的直觉）
+  tray.on('click', () => showMain())
+}
+
 /* ────────────── 采集 ────────────── */
 
 async function doCapture(): Promise<CapturePayload | null> {
@@ -165,9 +208,17 @@ async function doCapture(): Promise<CapturePayload | null> {
 
 function setupHotkey(): void {
   const accel = getSettings().hotkey
-  if (!registerHotkey(accel, () => void doCapture())) {
-    console.warn(`[hotkey] 注册失败：${accel}（可能被占用）`)
-  }
+  if (registerHotkey(accel, () => void doCapture())) return
+
+  console.warn(`[hotkey] 注册失败：${accel}（可能被占用）`)
+  // 静默失败是最难受的失败：用户按了没反应，完全不知道为什么。明确告诉他。
+  void dialog.showMessageBox({
+    type: 'warning',
+    title: '全局热键没能注册',
+    message: `热键 ${accel} 注册失败，通常是已被其他程序占用。`,
+    detail: '你仍然可以用托盘菜单里的「截图录入」，或到「设置 → 学习计划」换一个组合。',
+    buttons: ['知道了']
+  })
 }
 
 /* ────────────── 连通性自检（设置页的「测试」按钮） ────────────── */
@@ -333,6 +384,10 @@ async function runSelfTest(imagePath?: string): Promise<number> {
   console.log(`识别模型 : ${choice.provider} / ${choice.model}`)
   console.log(`协议格式 : ${provider?.format ?? 'openai'}   端点: ${provider?.baseUrl ?? '(未知 provider)'}`)
   console.log(`API Key  : ${hasKey ? '已配置' : '未配置 —— 请到「设置」里填写'}`)
+  // 这条专治「按了热键没反应」：overlay.html 少了就是构建没带上，框选界面永远出不来
+  const overlayOk = fs.existsSync(overlayHtmlPath)
+  console.log(`框选界面 : ${overlayOk ? 'OK' : '缺失！'}  ${overlayHtmlPath}`)
+  if (!overlayOk) return 5
   if (!provider || !hasKey) return 2
 
   try {
@@ -396,6 +451,7 @@ app.whenReady().then(async () => {
 
   registerHandlers()
   createWindow()
+  createTray()
   setupHotkey()
 
   // 索引为空 → 从 Markdown 全量重建（文件才是真相源）
@@ -410,10 +466,20 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on('will-quit', () => unregisterHotkeys())
+app.on('before-quit', () => {
+  quitting = true
+})
 
+app.on('will-quit', () => {
+  unregisterHotkeys()
+  tray?.destroy()
+  tray = null
+})
+
+// 有托盘常驻，窗口全关也不退出
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform === 'darwin') return
+  if (!tray) app.quit()
 })
 
 process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason))

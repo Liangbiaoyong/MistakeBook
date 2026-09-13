@@ -15,6 +15,11 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { randomUUID } from 'crypto'
 import type { CapturePayload } from '@shared/ipc'
+// 必须用 ?asset 引入：out/ 只会带上被引用的资源，裸路径写 overlay.html 构建后就找不到了
+import overlayHtmlPath from './overlay.html?asset'
+
+/** 供自检使用：确认框选界面确实被打进了构建产物 */
+export { overlayHtmlPath }
 
 /**
  * 框选结果（从 overlay 窗发送回来的像素坐标）
@@ -39,6 +44,7 @@ let overlayWin: BrowserWindow | null = null
 /** overlay 窗口发送的 IPC 通道 */
 const OVERLAY_COMMIT = 'overlay:commit'
 const OVERLAY_CANCEL = 'overlay:cancel'
+const OVERLAY_READY = 'overlay:ready'
 
 /**
  * 获取最后成功的截图
@@ -102,12 +108,12 @@ async function captureScreen(): Promise<NativeImage | null> {
 /**
  * 显示 overlay 窗口，让用户框选区域
  *
- * @param screenshotDataUrl 截图的 data URL，作为背景显示
+ * @param shotPath 整屏截图落盘后的路径（overlay 用 file:// 读它当背景）
  * @param display 目标显示器
  * @returns 框选区域（已乘以 devicePixelRatio 的像素坐标），或 null（用户取消）
  */
 function showOverlay(
-  screenshotDataUrl: string,
+  shotPath: string,
   display: Electron.Display
 ): Promise<SelectionRect | null> {
   return new Promise((resolve) => {
@@ -137,16 +143,20 @@ function showOverlay(
       }
     })
 
-    // 传递截图 data URL 作为查询参数
-    const overlayUrl = path.join(__dirname, 'overlay.html')
-    const url = new URL(overlayUrl)
-    url.searchParams.set('screenshot', screenshotDataUrl)
+    // 只把截图的**文件路径**传过去。
+    // 别传 data URL：一张全屏图 base64 之后有好几 MB，塞进 URL 会直接把加载搞崩。
+    const search = new URLSearchParams({ shot: shotPath }).toString()
 
-    // 等待窗口加载完成后再显示
-    overlayWin.once('ready-to-show', () => {
-      overlayWin?.show()
-      overlayWin?.focus()
-    })
+    // 等 overlay 把背景图画出来再显示，否则会先闪一下桌面。
+    // 兜底：万一 ready 信号没来（图片读失败等），1.2 秒后照样显示，不能让用户干等。
+    const showNow = (): void => {
+      if (overlayWin && !overlayWin.isDestroyed() && !overlayWin.isVisible()) {
+        overlayWin.show()
+        overlayWin.focus()
+      }
+    }
+    const readyFallback = setTimeout(showNow, 1200)
+    ipcMain.once(OVERLAY_READY, showNow)
 
     // 处理框选结果
     function onCommit(_event: Electron.IpcMainEvent, rect: SelectionRect) {
@@ -161,6 +171,8 @@ function showOverlay(
     }
 
     function cleanup() {
+      clearTimeout(readyFallback)
+      ipcMain.removeListener(OVERLAY_READY, showNow)
       ipcMain.removeListener(OVERLAY_COMMIT, onCommit)
       ipcMain.removeListener(OVERLAY_CANCEL, onCancel)
       // 必须用 destroy()，不能用 close()
@@ -181,8 +193,10 @@ function showOverlay(
     })
 
     // 加载 overlay HTML
-    overlayWin.loadFile(overlayUrl, {
-      search: url.searchParams.toString()
+    overlayWin.loadFile(overlayHtmlPath, { search }).catch((err) => {
+      console.error('[capture] overlay 加载失败:', err)
+      cleanup()
+      resolve(null)
     })
   })
 }
@@ -254,6 +268,7 @@ export async function startCapture(): Promise<CapturePayload | null> {
   }
 
   inflight = (async () => {
+    let shotPath: string | null = null
     try {
       // 1. 截取屏幕
       const screenImage = await captureScreen()
@@ -264,18 +279,27 @@ export async function startCapture(): Promise<CapturePayload | null> {
 
       // 2. 获取光标所在显示器信息
       const display = getCursorDisplay()
+      console.log(
+        `[capture] 显示 ${display.size.width}x${display.size.height} @${display.scaleFactor}x，` +
+          `截到 ${screenImage.getSize().width}x${screenImage.getSize().height}`
+      )
 
-      // 3. 将截图转换为 data URL 传给 overlay
-      const screenshotDataUrl = screenImage.toDataURL()
+      // 3. 整屏截图落盘，overlay 用 file:// 读它当背景
+      shotPath = path.join(app.getPath('userData'), 'tmp', `overlay-${randomUUID()}.png`)
+      fs.mkdirSync(path.dirname(shotPath), { recursive: true })
+      fs.writeFileSync(shotPath, screenImage.toPNG())
 
       // 4. 显示 overlay，等待用户框选
-      const rect = await showOverlay(screenshotDataUrl, display)
+      const rect = await showOverlay(shotPath, display)
 
       // 5. 用户取消
       if (!rect) {
         console.log('[capture] 用户取消截图')
         return null
       }
+      console.log(
+        `[capture] 框选 ${rect.width}x${rect.height} @(${rect.x},${rect.y})`
+      )
 
       // 6. 裁剪图片
       const croppedImage = cropImage(screenImage, rect)
@@ -293,6 +317,8 @@ export async function startCapture(): Promise<CapturePayload | null> {
       console.error('[capture] 截图流程失败:', err)
       return null
     } finally {
+      // 背景大图用完即删 —— 它只是给 overlay 看的，没有留存价值
+      if (shotPath) fs.rmSync(shotPath, { force: true })
       // 确保 overlay 窗口被销毁，避免内存泄漏
       if (overlayWin && !overlayWin.isDestroyed()) {
         overlayWin.destroy()

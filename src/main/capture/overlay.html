@@ -2,215 +2,190 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>框选截图</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    body {
-      width: 100vw;
-      height: 100vh;
+    html, body {
+      width: 100vw; height: 100vh;
       overflow: hidden;
-      cursor: crosshair;
       background: transparent;
-    }
-
-    #bg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      filter: brightness(0.6);
+      cursor: crosshair;
       user-select: none;
-      -webkit-app-region: no-drag;
     }
 
+    /* 两张同一张图：
+       #bg 压暗作为底，选区用 #bg-live 以原亮度"挖"出来 ——
+       只有这样选区才真正凸出来；整体统一压暗是没用的。 */
+    #bg, #bg-live {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: fill;
+      pointer-events: none;
+      -webkit-user-drag: none;
+    }
+    #bg { filter: brightness(0.45) saturate(0.85); }
+    #bg-live { clip-path: inset(100% 0 0 0); }
+
+    /* 选中框 */
     #selection {
       position: absolute;
-      border: 2px solid #00ff00;
-      background: rgba(0, 255, 0, 0.15);
       display: none;
       pointer-events: none;
+      border: 1.5px solid #4ecdc4;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 22px rgba(78, 205, 196, 0.35);
     }
+    /* 四角标记，让边界更好认 */
+    #selection i {
+      position: absolute; width: 9px; height: 9px;
+      background: #4ecdc4;
+      border-radius: 1px;
+    }
+    #selection i:nth-child(1) { top: -5px; left: -5px; }
+    #selection i:nth-child(2) { top: -5px; right: -5px; }
+    #selection i:nth-child(3) { bottom: -5px; left: -5px; }
+    #selection i:nth-child(4) { bottom: -5px; right: -5px; }
 
     #size-label {
       position: absolute;
-      top: -30px;
-      left: 0;
-      background: rgba(0, 255, 0, 0.9);
-      color: #000;
-      padding: 2px 8px;
-      font-size: 13px;
-      font-family: system-ui, sans-serif;
-      font-weight: 600;
+      top: -32px; left: 0;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      background: #4ecdc4;
+      color: #06231f;
+      font: 600 12.5px/1.4 'Segoe UI', system-ui, sans-serif;
       white-space: nowrap;
-      border-radius: 3px;
     }
+    /* 贴近顶部时把标签翻到框内侧，避免跑出屏幕 */
+    #size-label.below { top: auto; bottom: -32px; }
 
     #hint {
-      position: absolute;
-      bottom: 20px;
-      left: 50%;
+      position: absolute; left: 50%; bottom: 26px;
       transform: translateX(-50%);
-      color: #fff;
-      font-size: 14px;
-      font-family: system-ui, sans-serif;
-      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-      opacity: 0.8;
+      padding: 7px 16px;
+      border-radius: 9999px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(6px);
+      color: rgba(255, 255, 255, 0.92);
+      font: 400 13px/1.4 'Segoe UI', system-ui, sans-serif;
+      white-space: nowrap;
     }
+    #hint b { color: #4ecdc4; font-weight: 600; }
   </style>
 </head>
 <body>
-  <img id="bg" draggable="false" />
+  <img id="bg" alt="" />
+  <img id="bg-live" alt="" />
   <div id="selection">
+    <i></i><i></i><i></i><i></i>
     <div id="size-label"></div>
   </div>
-  <div id="hint">拖动鼠标框选区域 | ESC 或 右键 取消 | 回车 确认</div>
+  <div id="hint">拖动框选 · <b>回车</b> 确认 · <b>Esc</b> 取消</div>
 
   <script>
-    // 启用 nodeIntegration 和 contextIsolation=false 是因为：
-    // 1. 这个 overlay 窗口完全由主进程创建和控制，不加载任何外部资源
-    // 2. 它是可信的本地窗口，不存在安全风险
-    // 3. 这样可以避免额外的 preload 脚本和 IPC 通信开销
     const { ipcRenderer } = require('electron')
 
-    const bg = document.getElementById('bg')
+    const bgDim = document.getElementById('bg')
+    const bgLive = document.getElementById('bg-live')
     const selection = document.getElementById('selection')
     const sizeLabel = document.getElementById('size-label')
-    const hint = document.getElementById('hint')
 
-    let isDragging = false
-    let startX = 0
-    let startY = 0
-    let currentX = 0
-    let currentY = 0
-    let hasSelection = false
-
-    // 从 URL 参数获取截图数据
-    const urlParams = new URLSearchParams(window.location.search)
-    const screenshotDataUrl = urlParams.get('screenshot')
-
-    if (screenshotDataUrl) {
-      bg.src = screenshotDataUrl
+    // 主进程只传文件路径过来；页面本身是 file://，可以直接引用本地文件
+    const shot = new URLSearchParams(location.search).get('shot')
+    if (shot) {
+      const src = 'file:///' + shot.replace(/\\/g, '/')
+      bgDim.src = src
+      bgLive.src = src
     }
 
-    // 获取实际坐标（相对窗口）
-    function getPos(e) {
-      return {
-        x: e.clientX,
-        y: e.clientY
-      }
+    // 等图真正画出来再让主进程显示窗口，避免先闪一下桌面
+    const ready = () => ipcRenderer.send('overlay:ready')
+    if (bgDim.complete) ready()
+    else {
+      bgDim.addEventListener('load', ready)
+      bgDim.addEventListener('error', ready)
     }
 
-    // 更新选区显示
-    function updateSelection() {
-      const x = Math.min(startX, currentX)
-      const y = Math.min(startY, currentY)
-      const w = Math.abs(currentX - startX)
-      const h = Math.abs(currentY - startY)
+    let dragging = false
+    let start = null
+    let sel = null   // { x, y, w, h } —— CSS 像素
 
-      selection.style.left = x + 'px'
-      selection.style.top = y + 'px'
-      selection.style.width = w + 'px'
-      selection.style.height = h + 'px'
-
-      // 显示像素尺寸（CSS 像素）
-      sizeLabel.textContent = w + ' × ' + h + ' px'
-      sizeLabel.style.left = '0px'
-
-      hasSelection = w >= 8 && h >= 8
+    function pos(e) {
+      return { x: Math.min(Math.max(e.clientX, 0), innerWidth), y: Math.min(Math.max(e.clientY, 0), innerHeight) }
     }
 
-    // 提交选区到主进程
-    function commitSelection() {
-      if (!hasSelection) {
+    function paint() {
+      if (!sel || sel.w < 1 || sel.h < 1) {
+        selection.style.display = 'none'
+        bgLive.style.clipPath = 'inset(100% 0 0 0)'
         return
       }
-
-      const x = Math.min(startX, currentX)
-      const y = Math.min(startY, currentY)
-      const w = Math.abs(currentX - startX)
-      const h = Math.abs(currentY - startY)
-
-      // HiDPI/Retina: 乘以 devicePixelRatio 得到实际像素坐标
-      const dpr = window.devicePixelRatio || 1
-      const rect = {
-        x: Math.round(x * dpr),
-        y: Math.round(y * dpr),
-        width: Math.round(w * dpr),
-        height: Math.round(h * dpr)
-      }
-
-      ipcRenderer.send('overlay:commit', rect)
-    }
-
-    // 取消选区
-    function cancelSelection() {
-      ipcRenderer.send('overlay:cancel')
-    }
-
-    // 事件监听
-    bg.addEventListener('mousedown', (e) => {
-      if (e.button === 2) {
-        // 右键取消
-        cancelSelection()
-        return
-      }
-
-      const pos = getPos(e)
-      startX = pos.x
-      startY = pos.y
-      currentX = pos.x
-      currentY = pos.y
-      isDragging = true
       selection.style.display = 'block'
-      updateSelection()
+      selection.style.left = sel.x + 'px'
+      selection.style.top = sel.y + 'px'
+      selection.style.width = sel.w + 'px'
+      selection.style.height = sel.h + 'px'
+
+      // 选区处露出未压暗的原图
+      bgLive.style.clipPath = `inset(${sel.y}px ${innerWidth - sel.x - sel.w}px ${innerHeight - sel.y - sel.h}px ${sel.x}px)`
+
+      const dpr = window.devicePixelRatio || 1
+      sizeLabel.textContent = `${Math.round(sel.w * dpr)} × ${Math.round(sel.h * dpr)}`
+      sizeLabel.classList.toggle('below', sel.y < 36)
+    }
+
+    addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return
+      dragging = true
+      start = pos(e)
+      sel = { x: start.x, y: start.y, w: 0, h: 0 }
+      paint()
     })
 
-    bg.addEventListener('mousemove', (e) => {
-      if (!isDragging) return
-
-      const pos = getPos(e)
-      currentX = pos.x
-      currentY = pos.y
-      updateSelection()
-    })
-
-    bg.addEventListener('mouseup', (e) => {
-      if (e.button === 2 || !isDragging) return
-
-      isDragging = false
-      const pos = getPos(e)
-      currentX = pos.x
-      currentY = pos.y
-      updateSelection()
-
-      if (hasSelection) {
-        // 选区足够大，显示确认提示
-        hint.textContent = '按回车确认 | ESC 或 右键 取消'
+    addEventListener('mousemove', (e) => {
+      if (!dragging) return
+      const p = pos(e)
+      sel = {
+        x: Math.min(start.x, p.x),
+        y: Math.min(start.y, p.y),
+        w: Math.abs(p.x - start.x),
+        h: Math.abs(p.y - start.y)
       }
+      paint()
     })
 
-    // 键盘事件
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        cancelSelection()
-      } else if (e.key === 'Enter' && hasSelection) {
-        commitSelection()
-      }
+    addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return
+      dragging = false
     })
 
-    // 禁用右键菜单
-    bg.addEventListener('contextmenu', (e) => {
+    // 右键取消
+    addEventListener('contextmenu', (e) => {
       e.preventDefault()
-      cancelSelection()
+      ipcRenderer.send('overlay:cancel')
     })
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        ipcRenderer.send('overlay:cancel')
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        commit()
+      }
+    })
+
+    function commit() {
+      if (!sel || sel.w < 8 || sel.h < 8) return   // 太小视为误触，不提交
+      const dpr = window.devicePixelRatio || 1
+      ipcRenderer.send('overlay:commit', {
+        x: Math.round(sel.x * dpr),
+        y: Math.round(sel.y * dpr),
+        width: Math.round(sel.w * dpr),
+        height: Math.round(sel.h * dpr)
+      })
+    }
   </script>
 </body>
 </html>
