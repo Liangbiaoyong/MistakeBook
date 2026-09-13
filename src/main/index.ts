@@ -2,8 +2,6 @@ import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, protocol, dialog,
 import path from 'node:path'
 import fs from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import iconPng from '../../resources/icon.png?asset'
-import trayPng from '../../resources/tray.png?asset'
 
 import { IPC } from '@shared/ipc'
 import type { CapturePayload } from '@shared/ipc'
@@ -54,6 +52,21 @@ import { getSettings, updateSettings } from './settings'
 import { logLine } from './log'
 
 const ASSET_SCHEME = 'cuoti-asset'
+
+/**
+ * 资源文件的真实路径。
+ *
+ * ⚠ 图标不能用 `?asset` 引入：electron-vite 只会把它解析成相对路径
+ * `../../resources/icon.png`，开发模式下这个位置确实存在，但**打包后它在 app.asar 里并不存在**。
+ * 而 `nativeImage.createFromPath()` 找不到文件时不会报错，只是返回一张空图 ——
+ * 表现就是「任务栏 / 托盘图标是透明的」。打包版必须走 process.resourcesPath。
+ * （配合 electron-builder.yml 的 extraResources 把 resources/ 拷进去。）
+ */
+function resourcePath(name: string): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, name)
+    : path.join(__dirname, '../../resources', name)
+}
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -142,7 +155,7 @@ function createWindow(): void {
     backgroundColor: '#000000',
     autoHideMenuBar: true,
     title: '错题本',
-    icon: nativeImage.createFromPath(iconPng),
+    icon: nativeImage.createFromPath(resourcePath('icon.png')),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -186,7 +199,7 @@ function showMain(): void {
 }
 
 function createTray(): void {
-  tray = new Tray(nativeImage.createFromPath(trayPng))
+  tray = new Tray(nativeImage.createFromPath(resourcePath('tray.png')))
   tray.setToolTip(`错题本 · 按 ${getSettings().hotkey} 截图录入`)
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -224,8 +237,12 @@ async function doCapture(): Promise<CapturePayload | null> {
 
 function setupHotkey(): void {
   const accel = getSettings().hotkey
-  if (registerHotkey(accel, () => void doCapture())) return
+  if (registerHotkey(accel, () => void doCapture())) {
+    logLine('hotkey', `已注册 ${accel}`)
+    return
+  }
 
+  logLine('hotkey', `注册失败：${accel}（可能被占用）`)
   console.warn(`[hotkey] 注册失败：${accel}（可能被占用）`)
   // 静默失败是最难受的失败：用户按了没反应，完全不知道为什么。明确告诉他。
   void dialog.showMessageBox({
@@ -401,15 +418,30 @@ async function runSelfTest(imagePath?: string): Promise<number> {
   const provider = getProviderById(choice.provider)
   const hasKey = !!getProviderKey(choice.provider)
 
-  console.log('── MistakeBook 自检 ──')
-  console.log(`仓库目录 : ${getVaultDir()}`)
-  console.log(`识别模型 : ${choice.provider} / ${choice.model}`)
-  console.log(`协议格式 : ${provider?.format ?? 'openai'}   端点: ${provider?.baseUrl ?? '(未知 provider)'}`)
-  console.log(`API Key  : ${hasKey ? '已配置' : '未配置 —— 请到「设置」里填写'}`)
-  // 这条专治「按了热键没反应」：overlay.html 少了就是构建没带上，框选界面永远出不来
-  const overlayOk = fs.existsSync(overlayHtmlPath)
-  console.log(`框选界面 : ${overlayOk ? 'OK' : '缺失！'}  ${overlayHtmlPath}`)
-  if (!overlayOk) return 5
+  // 同时写进日志：打包版没有控制台，日志是唯一的出口
+  const say = (line: string): void => {
+    console.log(line)
+    logLine('selftest', line)
+  }
+
+  say('── MistakeBook 自检 ──')
+  say(`版本     : ${app.getVersion()}${app.isPackaged ? '（打包版）' : '（开发）'}`)
+  say(`仓库目录 : ${getVaultDir()}`)
+  say(`识别模型 : ${choice.provider} / ${choice.model}`)
+  say(`协议格式 : ${provider?.format ?? 'openai'}   端点: ${provider?.baseUrl ?? '(未知 provider)'}`)
+  say(`API Key  : ${hasKey ? '已配置' : '未配置 —— 请到「设置」里填写'}`)
+
+  // 这几项在打包版里最容易「静默失效」——文件找不到不报错，只是静悄悄地不工作
+  const mustExist: Array<[string, string]> = [
+    ['框选界面', overlayHtmlPath],
+    ['应用图标', resourcePath('icon.png')],
+    ['托盘图标', resourcePath('tray.png')]
+  ]
+  for (const [label, p] of mustExist) {
+    const exists = fs.existsSync(p)
+    say(`${label} : ${exists ? 'OK' : '缺失！'}  ${p}`)
+    if (!exists) return 5
+  }
   if (!provider || !hasKey) return 2
 
   try {
@@ -423,12 +455,12 @@ async function runSelfTest(imagePath?: string): Promise<number> {
     })
     console.log(`文本连通 : OK (${Date.now() - t0}ms) → ${echo.trim().slice(0, 30)}`)
   } catch (e) {
-    console.log(`文本连通 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
+    say(`文本连通 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
     return 3
   }
 
   if (!imagePath) {
-    console.log('视觉识别 : 跳过（未提供图片路径）')
+    say('视觉识别 : 跳过（未提供图片路径）')
     return 0
   }
 
@@ -441,10 +473,10 @@ async function runSelfTest(imagePath?: string): Promise<number> {
       schema: z.object({ firstLine: z.string() }),
       maxTokens: 800
     })
-    console.log(`视觉识别 : OK (${Date.now() - t0}ms) → ${JSON.stringify(out).slice(0, 200)}`)
+    say(`视觉识别 : OK (${Date.now() - t0}ms) → ${JSON.stringify(out).slice(0, 200)}`)
     return 0
   } catch (e) {
-    console.log(`视觉识别 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
+    say(`视觉识别 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
     return 4
   }
 }
@@ -454,7 +486,11 @@ async function runSelfTest(imagePath?: string): Promise<number> {
 registerAssetScheme()
 
 app.whenReady().then(async () => {
-  logLine('app', '应用启动')
+  // 把版本号和运行形态写进日志：出问题时第一件事就是确认「你跑的到底是哪个版本」
+  logLine(
+    'app',
+    `应用启动 v${app.getVersion()}${app.isPackaged ? '（打包版）' : '（开发）'} hotkey=${getSettings().hotkey}`
+  )
   ensureDirs()
   fs.mkdirSync(getTempDir(), { recursive: true })
 

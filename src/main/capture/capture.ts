@@ -33,6 +33,9 @@ interface SelectionRect {
   height: number
 }
 
+/** overlay 的结束方式 —— 分开记，才能在日志里区分「真取消」和「被关掉」 */
+type OverlayEnd = { kind: 'commit'; rect: SelectionRect } | { kind: 'cancel'; reason: string }
+
 /** 单例：当前进行中的截图 Promise，防止多次触发 */
 let inflight: Promise<CapturePayload | null> | null = null
 
@@ -46,6 +49,13 @@ let overlayWin: BrowserWindow | null = null
 const OVERLAY_COMMIT = 'overlay:commit'
 const OVERLAY_CANCEL = 'overlay:cancel'
 const OVERLAY_READY = 'overlay:ready'
+const OVERLAY_DEBUG = 'overlay:debug'
+
+// overlay 自己写不了日志文件，交互埋点通过 IPC 转给主进程记下来。
+// 排查「按了没反应」时，这行日志能直接看出用户到底做了什么。
+ipcMain.on(OVERLAY_DEBUG, (_e, msg: unknown) => {
+  logLine('overlay', typeof msg === 'string' ? msg : JSON.stringify(msg))
+})
 
 /**
  * 获取最后成功的截图
@@ -129,6 +139,23 @@ function showOverlay(
   return new Promise((resolve) => {
     const { x, y, width, height } = display.bounds
 
+    // ⚠ 必须「先落定、再拆窗」。
+    // cleanup() 里的 destroy() 会触发 closed 事件，而 closed 处理器也会 resolve(null)。
+    // 如果先 cleanup 再 resolve(rect)，closed 那条路会抢先 settle，
+    // 把用户已经框好的选区当成「取消」丢掉 —— 表现就是「截了图但没反应」。
+    let settled = false
+    const settle = (end: OverlayEnd): void => {
+      if (settled) return
+      settled = true
+      if (end.kind === 'commit') {
+        resolve(end.rect)
+      } else {
+        logLine('capture', `overlay 结束：取消（${end.reason}）`)
+        resolve(null)
+      }
+      cleanup()
+    }
+
     // 创建 overlay 窗口
     overlayWin = new BrowserWindow({
       x,
@@ -168,16 +195,13 @@ function showOverlay(
     const readyFallback = setTimeout(showNow, 1200)
     ipcMain.once(OVERLAY_READY, showNow)
 
-    // 处理框选结果
-    function onCommit(_event: Electron.IpcMainEvent, rect: SelectionRect) {
-      cleanup()
-      resolve(rect)
+    function onCommit(_event: Electron.IpcMainEvent, rect: SelectionRect): void {
+      logLine('capture', `收到框选 ${rect.width}x${rect.height} @(${rect.x},${rect.y})`)
+      settle({ kind: 'commit', rect })
     }
 
-    // 处理取消
-    function onCancel() {
-      cleanup()
-      resolve(null)
+    function onCancel(): void {
+      settle({ kind: 'cancel', reason: '用户按了 Esc 或右键' })
     }
 
     function cleanup() {
@@ -196,17 +220,15 @@ function showOverlay(
     ipcMain.on(OVERLAY_COMMIT, onCommit)
     ipcMain.on(OVERLAY_CANCEL, onCancel)
 
-    // 窗口被意外关闭时也要清理
+    // 窗口被意外关闭：只有在还没落定时才算取消
     overlayWin.on('closed', () => {
-      cleanup()
-      resolve(null)
+      settle({ kind: 'cancel', reason: '窗口被关闭' })
     })
 
     // 加载 overlay HTML
     overlayWin.loadFile(overlayHtmlPath, { search }).catch((err) => {
       logLine('capture', `overlay 加载失败: ${err instanceof Error ? err.message : String(err)}`)
-      cleanup()
-      resolve(null)
+      settle({ kind: 'cancel', reason: 'overlay 加载失败' })
     })
   })
 }
@@ -306,9 +328,9 @@ export async function startCapture(): Promise<CapturePayload | null> {
       // 4. 显示 overlay，等待用户框选
       const rect = await showOverlay(shotPath, display)
 
-      // 5. 用户取消
+      // 5. 没拿到选区（具体原因已由 showOverlay 记进日志）
       if (!rect) {
-        logLine('capture', '用户取消截图 (reason: user cancelled)')
+        logLine('capture', '未得到框选区域，流程结束')
         return null
       }
       logLine(

@@ -234,3 +234,62 @@
 .cu-enter {
   animation: cu-fade-in 200ms var(--ease-cuoti) both;
 }
+
+/* ── 加载反馈动效 ── */
+@keyframes cu-progress-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes cu-skeleton-pulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes cu-thumbnail-breathe {
+  0%, 100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.cu-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.cu-progress-bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 60%;
+  background: #4ecdc4;
+  border-radius: 2px;
+  animation: cu-progress-sweep 1.5s ease-in-out infinite;
+}
+
+.cu-skeleton-block {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  animation: cu-skeleton-pulse 2s ease-in-out infinite;
+}
+
+.cu-thumbnail-loading {
+  animation: cu-thumbnail-breathe 3s ease-in-out infinite;
+}

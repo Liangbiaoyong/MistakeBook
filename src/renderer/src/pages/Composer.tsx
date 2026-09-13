@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CapturePayload } from '@shared/ipc'
 import type { Extraction, MistakeBody } from '@shared/types'
 import { QUESTION_TYPES, ERROR_TYPES } from '@shared/types'
-import Spinner from '../components/Spinner'
 import Markdown from '../components/Markdown'
 import { cuCard, cuCtaPrimary, cuCtaGhost, cuNotice, Icon } from '../design/tokens'
 
@@ -30,6 +29,7 @@ interface FormState {
 export default function Composer({ payload, onClose }: ComposerProps): React.JSX.Element {
   const [extraction, setExtraction] = useState<Extraction | null>(null)
   const [loading, setLoading] = useState(true)
+  const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<FormState>({
@@ -51,7 +51,9 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
 
     const run = async () => {
       setLoading(true)
+      setExtracting(true)
       const r = await window.api.extract(payload.imageAbsPath)
+      setExtracting(false)
       if (cancelled) return
 
       if (r.ok && r.data) {
@@ -135,6 +137,9 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur" role="dialog" aria-modal="true" aria-label="录入确认">
       <div className={`${cuCard()} relative max-h-[90vh] w-full max-w-3xl overflow-y-auto p-8`}>
+        {/* 进度条（仅在识别中显示） */}
+        {extracting && <div className="cu-progress-bar" />}
+
         {/* 关闭按钮 */}
         <button
           type="button"
@@ -170,15 +175,76 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
             <img
               src={payload.thumbDataUrl}
               alt="截图预览"
-              className="w-full rounded-2xl border border-white/20"
+              className={`w-full rounded-2xl border border-white/20 ${extracting ? 'cu-thumbnail-loading' : ''}`}
             />
           </div>
 
-          {/* 右侧：表单 / 加载 */}
+          {/* 右侧：表单 / 骨架 */}
           <div className="flex-1 space-y-4 min-w-0">
             {loading ? (
-              <Spinner label="正在识别…" />
+              /* 骨架占位符 */
+              <div className="space-y-4 animate-in">
+                {/* 科目 */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="cu-skeleton-block h-3 w-12" />
+                  <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                </div>
+                {/* 章节 + 知识点 */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-20" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-20" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                </div>
+                {/* 题型 + 难度 */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-10" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-16" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                </div>
+                {/* 答案 + 错因 */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-16" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-16" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-10" />
+                    <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                  </div>
+                </div>
+                {/* 来源 */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="cu-skeleton-block h-3 w-10" />
+                  <div className="cu-skeleton-block h-10 w-full rounded-full" />
+                </div>
+                {/* 正文各节 */}
+                <div className="space-y-3 pt-2">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-10" />
+                    <div className="cu-skeleton-block h-24 w-full rounded-2xl" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="cu-skeleton-block h-3 w-20" />
+                    <div className="cu-skeleton-block h-20 w-full rounded-2xl" />
+                  </div>
+                </div>
+              </div>
             ) : (
+              /* 实际表单 */
               <>
                 {/* 科目 */}
                 <label className="flex flex-col gap-1.5">
@@ -308,6 +374,28 @@ export default function Composer({ payload, onClose }: ComposerProps): React.JSX
                 </div>
               </>
             )}
+
+            {/* 状态行 */}
+            <div className="flex items-center gap-2 text-xs text-white/60 pt-2">
+              {extracting ? (
+                <>
+                  <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>正在识别题目（通常 5–15 秒）…</span>
+                </>
+              ) : loading && !extracting ? (
+                <span>正在读取截图…</span>
+              ) : extraction ? (
+                <>
+                  <Icon name="check" className="h-3 w-3 text-mint" />
+                  <span>识别完成，请核对</span>
+                </>
+              ) : (
+                <span>请核对以下信息</span>
+              )}
+            </div>
           </div>
         </div>
 

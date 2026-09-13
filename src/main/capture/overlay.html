@@ -33,11 +33,19 @@
       pointer-events: none;
       border: 1.5px solid #4ecdc4;
       box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 22px rgba(78, 205, 196, 0.35);
+      transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+    }
+    /* 提交瞬间闪一下白 —— 让"松手了"这件事有明确的视觉回应 */
+    #selection.commit {
+      border-color: #ffffff;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 34px rgba(78, 205, 196, 0.85);
     }
     #selection i {
       position: absolute; width: 9px; height: 9px;
       background: #4ecdc4; border-radius: 1px;
+      transition: background-color 160ms ease-out;
     }
+    #selection.commit i { background: #ffffff; }
     #selection i:nth-child(1) { top: -5px; left: -5px; }
     #selection i:nth-child(2) { top: -5px; right: -5px; }
     #selection i:nth-child(3) { bottom: -5px; left: -5px; }
@@ -69,22 +77,27 @@
     }
     #hint b { color: #4ecdc4; font-weight: 600; }
 
-    /* 提交后立刻给出确认，免得"松手了到底有没有反应" */
     #busy {
       position: absolute; left: 50%; top: 50%;
-      transform: translate(-50%, -50%);
       display: none;
       align-items: center; gap: 10px;
       padding: 12px 22px;
       border-radius: 9999px;
-      background: rgba(0, 0, 0, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.22);
       backdrop-filter: blur(8px);
       color: #fff;
       font: 500 14px/1 'Segoe UI', system-ui, sans-serif;
       white-space: nowrap;
     }
-    #busy.on { display: flex; }
+    #busy.on {
+      display: flex;
+      animation: pop-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+    @keyframes pop-in {
+      from { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+      to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
     #busy .dot {
       width: 13px; height: 13px; border-radius: 9999px;
       border: 2px solid rgba(255, 255, 255, 0.28);
@@ -92,6 +105,10 @@
       animation: spin 700ms linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    }
   </style>
 </head>
 <body>
@@ -107,6 +124,9 @@
   <script>
     const { ipcRenderer } = require('electron')
 
+    // 交互埋点：转给主进程写进日志。排查「按了没反应」时全靠它。
+    const dbg = (m) => { try { ipcRenderer.send('overlay:debug', m) } catch (e) { /* 埋点不能影响主流程 */ } }
+
     const bgDim = document.getElementById('bg')
     const bgLive = document.getElementById('bg-live')
     const selection = document.getElementById('selection')
@@ -120,14 +140,15 @@
       const src = 'file:///' + shot.replace(/\\/g, '/')
       bgDim.src = src
       bgLive.src = src
+    } else {
+      dbg('⚠ 没收到 shot 参数，背景图会是空的')
     }
 
-    // 等图真正画出来再让主进程显示窗口，避免先闪一下桌面
-    const ready = () => ipcRenderer.send('overlay:ready')
+    const ready = () => { dbg(`就绪（图 ${bgDim.naturalWidth}x${bgDim.naturalHeight}，dpr=${window.devicePixelRatio}）`); ipcRenderer.send('overlay:ready') }
     if (bgDim.complete) ready()
     else {
       bgDim.addEventListener('load', ready)
-      bgDim.addEventListener('error', ready)
+      bgDim.addEventListener('error', () => { dbg('⚠ 背景图加载失败'); ready() })
     }
 
     const MIN = 8
@@ -169,6 +190,7 @@
       start = pos(e)
       sel = { x: start.x, y: start.y, w: 0, h: 0 }
       paint()
+      dbg(`鼠标按下 (${Math.round(start.x)},${Math.round(start.y)})`)
     })
 
     addEventListener('mousemove', (e) => {
@@ -188,26 +210,32 @@
     addEventListener('mouseup', (e) => {
       if (e.button !== 0 || !dragging) return
       dragging = false
+      const w = sel ? Math.round(sel.w) : 0
+      const h = sel ? Math.round(sel.h) : 0
       if (!sel || sel.w < MIN || sel.h < MIN) {
+        dbg(`鼠标松开但选区过小（${w}x${h}），不提交、继续等待`)
         sel = null
         paint()
         return
       }
+      dbg(`鼠标松开 (${w}x${h})，提交`)
       commit()
     })
 
     addEventListener('contextmenu', (e) => {
       e.preventDefault()
-      if (!committing) ipcRenderer.send('overlay:cancel')
+      if (!committing) { dbg('右键取消'); ipcRenderer.send('overlay:cancel') }
     })
 
     addEventListener('keydown', (e) => {
       if (committing) return
       if (e.key === 'Escape') {
         e.preventDefault()
+        dbg('Esc 取消')
         ipcRenderer.send('overlay:cancel')
       } else if (e.key === 'Enter') {
         e.preventDefault()
+        dbg('回车提交')
         commit()
       }
     })
@@ -217,8 +245,9 @@
       if (!sel || sel.w < MIN || sel.h < MIN) return
       committing = true
 
-      // 先把确认态画出来，让用户看见"有反应"，再回传。
-      // 这点延时是刻意的：overlay 一被销毁，中间就没有任何可见反馈了。
+      // 先给视觉回应，再回传。
+      // 这点延时是刻意的：overlay 一被销毁，中间就再没有任何可见反馈了。
+      selection.classList.add('commit')
       busy.classList.add('on')
       hint.textContent = '正在识别，稍候…'
       document.body.style.cursor = 'default'
@@ -230,6 +259,7 @@
         width: Math.round(sel.w * dpr),
         height: Math.round(sel.h * dpr)
       }
+      dbg(`提交矩形 ${rect.width}x${rect.height} @(${rect.x},${rect.y}) dpr=${dpr}`)
       setTimeout(() => ipcRenderer.send('overlay:commit', rect), 260)
     }
   </script>

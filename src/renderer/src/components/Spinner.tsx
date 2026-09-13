@@ -3,12 +3,13 @@
  */
 interface SpinnerProps {
   label?: string
+  className?: string
 }
 
-export default function Spinner({ label }: SpinnerProps): React.JSX.Element {
+export default function Spinner({ label, className = 'h-10 w-10' }: SpinnerProps): React.JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-16">
-      <div className="relative h-10 w-10">
+      <div className={`relative ${className}`}>
         <div className="absolute inset-0 rounded-full border-2 border-white/20" />
         <div
           className="absolute inset-0 rounded-full border-2 border-transparent border-t-white"

@@ -6,6 +6,13 @@ directories:
 files:
   - out/**/*
   - package.json
+# 图标等运行时资源必须随包带上。
+# ⚠ 不能用 `?asset` 引入图片：electron-vite 只把它解析成相对路径，
+# 打包后那个位置在 app.asar 里并不存在，而 createFromPath 找不到文件时不报错、
+# 只返回空图 —— 表现就是任务栏/托盘图标透明。这里拷到 resourcesPath 根下。
+extraResources:
+  - from: resources
+    to: .
 win:
   target:
     - target: nsis
