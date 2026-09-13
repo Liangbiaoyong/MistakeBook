@@ -17,12 +17,22 @@
 - **Tailwind v4 不允许 `@apply` 自定义类**：`.cu-btn-primary` 里的 `@apply cu-btn` 会让渲染层构建立即失败。改用共享选择器
 
 ### 新增
+- **双协议支持**：除 OpenAI 兼容外，新增 **Anthropic 兼容**格式（`/v1/messages`）。`ProviderConfig`
+  增加 `format` 与任意 `headers`，可对接任意厂商与网关
+- **拉取模型列表**：设置页可向厂商请求可用模型并下拉选择；对方不暴露列表时明确提示手动填写
+- **`--selftest` 自检模式**：不开窗口即可验证「配置 → 解密 Key → 协议层 → 文本/视觉」整条链路
+- **OpenCode Go 预设**：内置本地网关（Anthropic 协议 + 必需的 `x-opencode-session` 头）
+- 设置页新增「学习计划」区块（考试日期 + 全局热键，改热键会立刻重新注册）；provider 可见可编辑、可清除密钥
 - 项目脚手架：Electron 44 + electron-vite 5 + React 19 + TypeScript 7 + Tailwind CSS 4
 - 全屏英雄区（Fullscreen Hero）风格的设计系统：暗底、玻璃卡片、胶囊控件，含动效降级
 - 共享类型与 IPC 契约（`src/shared/types.ts`、`src/shared/ipc.ts`）
 - 带考试日期的复习调度器 `src/main/review.ts`，含 16 项单元测试
-- 杂项设置存储 `src/main/settings.ts`（考试日期、热键），设置页可改；改热键会立刻重新注册
+- 杂项设置存储 `src/main/settings.ts`（考试日期、热键）
 - frontmatter 往返测试（覆盖 YAML 特殊字符、日期、空数组等易错场景）
+
+### 修复
+- **思考模型会把输出预算吃光**：`max_tokens` 偏小时，返回里只有 `thinking` 块、没有 `text` 块，
+  于是拿到空内容。客户端改为把传输层失败也纳入重试，并在错误里说清「返回了哪些块」
 
 ### 决策
 - **选 Electron 而非 Tauri**：已有跑通的 Electron 构建经验，踩过的坑均有解；Tauri 的体积/内存优势对本项目不构成决策因素

@@ -3,6 +3,7 @@
  */
 import { safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { getConfigPath, getKeysPath } from './store/paths'
 import type { ProviderConfig, ModelChoice, PublicModelConfig, FeatureKey } from '@shared/types'
 
@@ -13,8 +14,18 @@ interface ConfigData {
   vaultDir?: string
 }
 
+/** OpenCode Go 需要 x-opencode-session 头，进程内保持稳定即可 */
+const OPENCODE_SESSION = randomUUID()
+
 // 首次运行时的默认 provider
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
+  {
+    id: 'opencode-go',
+    label: 'OpenCode Go（本地网关 · Anthropic 协议）',
+    baseUrl: 'http://127.0.0.1:15721',
+    format: 'anthropic',
+    headers: { 'x-opencode-session': OPENCODE_SESSION }
+  },
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com' },
   { id: 'qwen', label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { id: 'zhipu', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
@@ -35,17 +46,24 @@ const DEFAULT_FEATURES: Partial<Record<FeatureKey, ModelChoice>> = {
 }
 
 /**
- * 读取配置文件
+ * 读取配置文件。首次运行时把默认值落盘 ——
+ * 否则每次启动都会重新生成 OpenCode 的 session ID，也跟着漂。
  */
 function readConfig(): ConfigData {
   const configPath = getConfigPath()
 
   if (!existsSync(configPath)) {
-    return {
+    const defaults: ConfigData = {
       providers: DEFAULT_PROVIDERS,
       default: DEFAULT_CHOICE,
       features: DEFAULT_FEATURES
     }
+    try {
+      writeConfig(defaults)
+    } catch {
+      // 落盘失败不该阻塞启动，内存里用默认值就行
+    }
+    return defaults
   }
 
   try {
@@ -173,6 +191,11 @@ export function setProviderKey(providerId: string, apiKey: string): void {
 export function getProviderKey(providerId: string): string | null {
   const keys = readKeys()
   return keys[providerId] ?? null
+}
+
+/** 取完整的 provider 配置（含 format 与附加请求头） */
+export function getProviderById(providerId: string): ProviderConfig | null {
+  return readConfig().providers.find((p) => p.id === providerId) ?? null
 }
 
 /**

@@ -80,9 +80,42 @@ tests/          单元测试
 **页面图表空白**
 ECharts 实例在卸载时销毁；若从别处切回来仍空白，多半是容器高度为 0 —— 图表容器必须有显式高度。
 
+## 自检
+
+配置完之后，用一行命令就能确认整条链路通不通（不开窗口，退出码即结论）：
+
+```bash
+npx electron . --selftest                  # 查配置 + 文本连通性
+npx electron . --selftest <图片路径>        # 再跑一次真实视觉识别
+```
+
+输出形如：
+
+```
+── MistakeBook 自检 ──
+仓库目录 : D:\...\Documents\MistakeBook
+识别模型 : opencode-go / claude-sonnet-4-6
+协议格式 : anthropic   端点: http://127.0.0.1:15721
+API Key  : 已配置
+文本连通 : OK (1645ms) → 连通
+视觉识别 : OK (10356ms) → {"firstLine":"第1章 绪 论"}
+```
+
+退出码：`0` 全通 / `2` 未配 Key / `3` 文本失败 / `4` 视觉失败。
+「为什么识别不工作」这类问题，先跑它，别猜。
+
 ## 新增一个模型 Provider
 
-设置页已支持填 id / 名称 / base URL。只要对方是 **OpenAI 兼容**的 `/chat/completions`，就能直接用。
+设置页可以填 id / 名称 / baseUrl / **协议格式** / **附加请求头**。
+
+- 协议格式 `openai`：聊天走 `baseUrl/chat/completions`
+- 协议格式 `anthropic`：聊天走 `baseUrl/v1/messages`，并自动带 `anthropic-version`
+
+`baseUrl` 怎么填取决于对方把端点挂在哪 —— 有的带 `/v1`，有的不带。
+附加请求头一行一条 `Key: Value`（例如 OpenCode Go 需要的 `x-opencode-session`）。
+
+「拉取模型」按钮会请求模型列表端点；对方不提供时（返回空或报错）会提示你手动填模型名，
+这属于正常情况，不是故障。
 
 ## 校验与测试
 

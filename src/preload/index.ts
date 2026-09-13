@@ -39,8 +39,10 @@ const api: Api = {
   configSetChoice: (feature, choice) => ipcRenderer.invoke(IPC.configSetChoice, feature, choice),
   configSetProviderKey: (providerId, apiKey) =>
     ipcRenderer.invoke(IPC.configSetProviderKey, providerId, apiKey),
+  configRemoveProviderKey: (providerId) => ipcRenderer.invoke(IPC.configRemoveProviderKey, providerId),
   configUpsertProvider: (p) => ipcRenderer.invoke(IPC.configUpsertProvider, p),
   configTest: (choice) => ipcRenderer.invoke(IPC.configTest, choice),
+  configListModels: (providerId) => ipcRenderer.invoke(IPC.configListModels, providerId),
 
   vaultGet: () => ipcRenderer.invoke(IPC.vaultGet),
   vaultChoose: () => ipcRenderer.invoke(IPC.vaultChoose),

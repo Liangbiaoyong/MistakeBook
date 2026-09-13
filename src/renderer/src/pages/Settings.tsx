@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import PageHeader from '../components/PageHeader'
 import Spinner from '../components/Spinner'
 import { Icon, cuCard, cuIconBox, cuCtaPrimary, cuCtaGhost, cuNotice } from '../design/tokens'
-import type { PublicModelConfig, FeatureKey, ModelChoice, ProviderConfig } from '@shared/types'
+import type { PublicModelConfig, FeatureKey, ModelChoice, ProviderConfig, ModelInfo } from '@shared/types'
 import { FEATURE_KEYS } from '@shared/types'
 
 const FEATURE_LABELS: Record<FeatureKey | 'default', string> = {
@@ -29,6 +29,9 @@ export default function Settings() {
   const [hotkey, setHotkey] = useState('')
   const [planMsg, setPlanMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [savingPlan, setSavingPlan] = useState(false)
+  const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
+  const [modelLists, setModelLists] = useState<Record<string, ModelInfo[]>>({})
+  const [modelListStatus, setModelListStatus] = useState<Record<string, string | null>>({})
 
   const loadConfig = useCallback(async () => {
     setLoading(true)
@@ -105,6 +108,18 @@ export default function Settings() {
     }
   }
 
+  const handleRemoveKey = async (providerId: string) => {
+    const result = await window.api.configRemoveProviderKey(providerId)
+    if (!result.ok) {
+      setTestResults((prev) => ({
+        ...prev,
+        [`key_${providerId}`]: { error: result.error ?? '清除密钥失败' },
+      }))
+    } else {
+      await loadConfig()
+    }
+  }
+
   const handleSaveProvider = async () => {
     if (!editingProvider) return
     const result = await window.api.configUpsertProvider(editingProvider)
@@ -132,6 +147,48 @@ export default function Settings() {
     } else {
       setError(result.error ?? '重建索引失败')
     }
+  }
+
+  const handleFetchModels = async (providerId: string) => {
+    setFetchingModels((prev) => ({ ...prev, [providerId]: true }))
+    setModelListStatus((prev) => ({ ...prev, [providerId]: null }))
+    const result = await window.api.configListModels(providerId)
+    if (!result.ok) {
+      setModelListStatus((prev) => ({ ...prev, [providerId]: 'error' }))
+      setTestResults((prev) => ({
+        ...prev,
+        [`models_${providerId}`]: { error: result.error ?? '拉取模型失败' },
+      }))
+    } else if (!result.data || result.data.length === 0) {
+      setModelListStatus((prev) => ({ ...prev, [providerId]: 'empty' }))
+    } else {
+      setModelLists((prev) => ({ ...prev, [providerId]: result.data! }))
+      setModelListStatus((prev) => ({ ...prev, [providerId]: 'ok' }))
+    }
+    setFetchingModels((prev) => ({ ...prev, [providerId]: false }))
+  }
+
+  const parseHeaders = (text: string): Record<string, string> => {
+    const headers: Record<string, string> = {}
+    text.split('\n').forEach((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      const colonIndex = trimmed.indexOf(':')
+      if (colonIndex === -1) return
+      const key = trimmed.slice(0, colonIndex).trim()
+      const value = trimmed.slice(colonIndex + 1).trim()
+      if (key && value) {
+        headers[key] = value
+      }
+    })
+    return headers
+  }
+
+  const formatHeaders = (headers: Record<string, string> | undefined): string => {
+    if (!headers || Object.keys(headers).length === 0) return ''
+    return Object.entries(headers)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n')
   }
 
   if (loading) {
@@ -202,27 +259,54 @@ export default function Settings() {
                       </option>
                     ))}
                   </select>
-                  <input
-                    type="text"
-                    value={choice.model}
-                    onChange={(e) => {
-                      const newChoice: ModelChoice = {
-                        ...choice,
-                        model: e.target.value,
-                      }
-                      window.api.configSetChoice(feature, newChoice)
-                      if (config) {
-                        setConfig({
-                          ...config,
-                          ...(feature === 'default'
-                            ? { default: newChoice }
-                            : { features: { ...config.features, [feature]: newChoice } }),
-                        })
-                      }
-                    }}
-                    className="cu-input text-sm px-3 py-1.5 flex-1"
-                    placeholder="模型名称"
-                  />
+                  <div className="flex-1 relative">
+                    <input
+                      type="text"
+                      value={choice.model}
+                      onChange={(e) => {
+                        const newChoice: ModelChoice = {
+                          ...choice,
+                          model: e.target.value,
+                        }
+                        window.api.configSetChoice(feature, newChoice)
+                        if (config) {
+                          setConfig({
+                            ...config,
+                            ...(feature === 'default'
+                              ? { default: newChoice }
+                              : { features: { ...config.features, [feature]: newChoice } }),
+                          })
+                        }
+                      }}
+                      list={`models-${choice.provider}`}
+                      className="cu-input text-sm px-3 py-1.5 w-full"
+                      placeholder="模型名称"
+                    />
+                    {modelLists[choice.provider] && modelLists[choice.provider]!.length > 0 && (
+                      <datalist id={`models-${choice.provider}`}>
+                        {modelLists[choice.provider]!.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label || m.id}
+                          </option>
+                        ))}
+                      </datalist>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleFetchModels(choice.provider)}
+                    disabled={fetchingModels[choice.provider]}
+                    className={`${cuCtaGhost} px-3 py-1.5 text-xs`}
+                    aria-label={`拉取 ${choice.provider} 的模型列表`}
+                  >
+                    {fetchingModels[choice.provider] ? (
+                      <Spinner label="" />
+                    ) : (
+                      <>
+                        <Icon name="refresh" className="h-4 w-4" />
+                        拉取模型
+                      </>
+                    )}
+                  </button>
                   <button
                     onClick={() => handleTest(testKey, choice)}
                     disabled={isTesting}
@@ -237,6 +321,21 @@ export default function Settings() {
                         : test.error}
                     </span>
                   )}
+                  {modelListStatus[choice.provider] === 'ok' && modelLists[choice.provider] && (
+                    <span className="text-xs text-mint">
+                      已获取 {modelLists[choice.provider]!.length} 个模型
+                    </span>
+                  )}
+                  {modelListStatus[choice.provider] === 'empty' && (
+                    <span className={cuNotice('info') + ' text-xs'}>
+                      该提供商未提供模型列表，请手动输入模型名称
+                    </span>
+                  )}
+                  {modelListStatus[choice.provider] === 'error' && (
+                    <span className={cuNotice('error') + ' text-xs'}>
+                      {testResults[`models_${choice.provider}`]?.error || '拉取失败'}
+                    </span>
+                  )}
                 </div>
               )
             })}
@@ -246,6 +345,9 @@ export default function Settings() {
 
       <section className="mb-10">
         <h2 className="text-xl font-semibold text-white/90 mb-4">Provider 与密钥</h2>
+        <div className={cuNotice('info') + ' mb-4'}>
+          OpenCode Go 走的是本地网关（Anthropic 协议），必须带 x-opencode-session 头——已预置。它的模型列表不通过 API 暴露，请直接填模型名。经实测，填 claude-sonnet-4-6 会被路由到支持读图的视觉模型；其他名字可能被路由到不支持图片的模型。
+        </div>
         <div className="space-y-4">
           {config.providers.map((p) => {
             const keyResult = testResults[`key_${p.id}`]
@@ -261,14 +363,34 @@ export default function Settings() {
                       <div className="font-semibold text-white/90 text-sm">{p.label}</div>
                       <div className="text-white/50 text-xs">{p.baseUrl}</div>
                     </div>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/50">
+                      {p.format === 'anthropic' ? 'Anthropic 兼容' : 'OpenAI 兼容'}
+                    </span>
                   </div>
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full ${
-                      hasKey ? 'bg-mint/20 text-mint' : 'bg-white/10 text-white/50'
-                    }`}
-                  >
-                    {hasKey ? '已配置' : '未配置'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full ${
+                        hasKey ? 'bg-mint/20 text-mint' : 'bg-white/10 text-white/50'
+                      }`}
+                    >
+                      {hasKey ? '已配置' : '未配置'}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setEditingProvider({
+                          id: p.id,
+                          label: p.label,
+                          baseUrl: p.baseUrl,
+                          format: p.format,
+                          headers: p.headers,
+                        })
+                      }
+                      className={`${cuCtaGhost} px-2 py-1 text-xs`}
+                      aria-label={`编辑 ${p.label}`}
+                    >
+                      <Icon name="edit" className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <input
@@ -290,6 +412,16 @@ export default function Settings() {
                   >
                     {savingKeyFor === p.id ? <Spinner label="" /> : '保存密钥'}
                   </button>
+                  {hasKey && (
+                    <button
+                      onClick={() => handleRemoveKey(p.id)}
+                      className={`${cuCtaGhost} px-2 py-1 text-xs text-coral`}
+                      aria-label={`清除 ${p.label} 密钥`}
+                    >
+                      <Icon name="trash" className="h-4 w-4" />
+                      清除
+                    </button>
+                  )}
                 </div>
                 {keyResult?.error && (
                   <div className={cuNotice('error') + ' mt-2 text-xs'}>
@@ -309,6 +441,8 @@ export default function Settings() {
                 id: '',
                 label: '',
                 baseUrl: '',
+                format: 'openai',
+                headers: {},
               })
             }
             className={`${cuCtaGhost} px-4 py-2 text-sm`}
@@ -348,6 +482,50 @@ export default function Settings() {
                   placeholder="Base URL（如 https://api.example.com）"
                   className="cu-input text-sm px-3 py-1.5 w-full"
                 />
+                <div>
+                  <label className="block text-white/70 text-xs mb-1">协议格式</label>
+                  <select
+                    value={editingProvider.format ?? 'openai'}
+                    onChange={(e) =>
+                      setEditingProvider({
+                        ...editingProvider,
+                        format: e.target.value as 'openai' | 'anthropic',
+                      })
+                    }
+                    className="cu-input text-sm px-3 py-1.5 w-full"
+                  >
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="anthropic">Anthropic 兼容</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-white/70 text-xs mb-1">附加请求头</label>
+                  <textarea
+                    value={formatHeaders(editingProvider.headers)}
+                    onChange={(e) =>
+                      setEditingProvider({
+                        ...editingProvider,
+                        headers: parseHeaders(e.target.value),
+                      })
+                    }
+                    placeholder="Key: Value（每行一个，如 x-opencode-session: xxx）"
+                    className="cu-textarea text-sm px-3 py-1.5 w-full h-20"
+                  />
+                  <p className="text-white/40 text-xs mt-1">
+                    格式：Key: Value（每行一个，空行和无效行会被忽略）
+                  </p>
+                </div>
+                <div className={cuNotice('info') + ' text-xs'}>
+                  <p className="mb-1">
+                    <strong>openai</strong> 格式：聊天走 baseUrl/chat/completions，模型列表走 baseUrl/models
+                  </p>
+                  <p>
+                    <strong>anthropic</strong> 格式：聊天走 baseUrl/v1/messages，模型列表走 baseUrl/v1/models
+                  </p>
+                  <p className="mt-1 text-white/40">
+                    所以有的厂商 baseUrl 要带 /v1，有的不要。
+                  </p>
+                </div>
                 <div className="flex gap-3">
                   <button
                     onClick={handleSaveProvider}

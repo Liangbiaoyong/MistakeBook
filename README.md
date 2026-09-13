@@ -82,10 +82,40 @@ npm run dist
 | 采集识别 | **必须支持读图** |
 | 错因分析 / 变式出题 / 考点排行 | 纯文本即可 |
 
-内置 DeepSeek / 通义千问 / 智谱 / 硅基流动四个 OpenAI 兼容 provider，也可自行添加。
+**两种协议格式都支持**，可加任意厂商：
+
+| 格式 | 聊天端点 | 模型列表端点 | 附带请求头 |
+|---|---|---|---|
+| `openai`（默认） | `baseUrl/chat/completions` | `baseUrl/models` | `Authorization: Bearer` |
+| `anthropic` | `baseUrl/v1/messages` | `baseUrl/v1/models` | `x-api-key` + `anthropic-version` |
+
+注意 `baseUrl` 要**按对方怎么挂端点**来填：有的厂商是 `https://api.deepseek.com`，有的是
+`https://api.siliconflow.cn/v1`。另外可以给每个 provider 配**任意附加请求头**。
+「拉取模型」按钮会向厂商要模型清单；对方不提供时（例如 OpenCode Go 只在 TUI 里列模型）
+会明确告诉你手动填，而不是装作坏了。
+
+内置 DeepSeek / 通义千问 / 智谱 / 硅基流动 / **OpenCode Go** 五个预设。
+
+### OpenCode Go（本地网关）
+
+OpenCode Go 是个 $10/月的订阅，走本地网关、**只支持 Anthropic 协议**，且**必须带
+`x-opencode-session` 头**（已预置）。它的模型清单不通过 API 暴露。
+
+⚠ **实测：模型名决定路由。** 填 `claude-sonnet-4-6` 会被路由到**支持读图**的视觉模型；
+填别的名字（`gpt-4o`、`qwen-vl-max`、`glm-4v`…）会被路由到 `deepseek-v4-flash`，**它看不到图**。
+
+### 自检
+
+配置完不确定通不通，跑一行命令就能看到结论（不开窗口）：
+
+```bash
+npx electron . --selftest                  # 查配置 + 文本连通
+npx electron . --selftest <图片路径>        # 再跑一次真实视觉识别
+```
 
 > **默认模型 `deepseek-flash`**：2026-09 实测其官方 API 支持图片输入。
 > ⚠ 图片按尺寸折算 token，单张上限约 1024 —— 所以**截图要裁紧，只截一道题**。
+> ⚠ 有的网关默认开思考模式，`max_tokens` 给小了会被推理吃光、拿不到正文（客户端已做重试）。
 
 ## 目录结构
 

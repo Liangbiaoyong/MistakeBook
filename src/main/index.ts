@@ -30,15 +30,18 @@ import {
 import { openIndex, initSchema, statsOverview, countRows } from './store/index-db'
 import {
   getPublicConfig,
+  getProviderById,
+  getProviderKey,
   setChoice,
   setProviderKey,
+  removeProviderKey,
   upsertProvider,
-  getProviderKey,
   getFeatureModel
 } from './config'
 import { startCapture } from './capture/capture'
 import { registerHotkey, unregisterHotkeys } from './capture/hotkey'
-import { chatVisionJSON } from './llm/client'
+import { chatText, chatVisionJSON, listModels } from './llm/client'
+import { z } from 'zod'
 import { ExtractionSchema } from './llm/schema'
 import { CAPTURE_SYSTEM } from './llm/prompts'
 import { analyzeErrorPatterns } from './features/analyze'
@@ -170,30 +173,15 @@ function setupHotkey(): void {
 /* ────────────── 连通性自检（设置页的「测试」按钮） ────────────── */
 
 async function testChoice(choice: ModelChoice): Promise<{ latencyMs: number; echo: string }> {
-  const cfg = getPublicConfig()
-  const provider = cfg.providers.find((p) => p.id === choice.provider)
-  if (!provider) throw new Error(`未知的 provider：${choice.provider}`)
-  const key = getProviderKey(choice.provider)
-  if (!key) throw new Error('MissingKeyError')
-
   const started = Date.now()
-  const res = await fetch(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: choice.model,
-      messages: [{ role: 'user', content: '只回复两个字：连通' }],
-      max_tokens: 16,
-      temperature: 0
-    }),
-    signal: AbortSignal.timeout(30_000)
+  // 走正常的调用路径，这样测的就是真实的协议格式、请求头与端点拼接
+  const echo = await chatText({
+    choice,
+    user: '只回复两个字：连通',
+    maxTokens: 32,
+    temperature: 0
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}：${(await res.text()).slice(0, 200)}`)
-  const json = (await res.json()) as { choices?: { message?: { content?: string } }[] }
-  return {
-    latencyMs: Date.now() - started,
-    echo: json.choices?.[0]?.message?.content?.trim() ?? '(空响应)'
-  }
+  return { latencyMs: Date.now() - started, echo: echo.trim().slice(0, 40) }
 }
 
 /* ────────────── IPC 注册 ────────────── */
@@ -288,7 +276,14 @@ function registerHandlers(): void {
     return null
   })
 
+  handle(IPC.configRemoveProviderKey, (providerId: string) => {
+    removeProviderKey(providerId)
+    return null
+  })
+
   handle(IPC.configTest, (choice: ModelChoice) => testChoice(choice))
+
+  handle(IPC.configListModels, (providerId: string) => listModels(providerId))
 
   handle(IPC.vaultGet, () => getVaultDir())
 
@@ -322,6 +317,61 @@ function registerHandlers(): void {
   })
 }
 
+/* ────────────── 自检 ──────────────
+   用法（在项目目录）：
+     npx electron . --selftest                 只检查配置与文本连通性
+     npx electron . --selftest <图片路径>       顺带跑一次真实的视觉识别
+   不需要开窗口，退出码即结论，便于排查「为什么识别不工作」。 */
+
+async function runSelfTest(imagePath?: string): Promise<number> {
+  const choice = getFeatureModel('capture')
+  const provider = getProviderById(choice.provider)
+  const hasKey = !!getProviderKey(choice.provider)
+
+  console.log('── MistakeBook 自检 ──')
+  console.log(`仓库目录 : ${getVaultDir()}`)
+  console.log(`识别模型 : ${choice.provider} / ${choice.model}`)
+  console.log(`协议格式 : ${provider?.format ?? 'openai'}   端点: ${provider?.baseUrl ?? '(未知 provider)'}`)
+  console.log(`API Key  : ${hasKey ? '已配置' : '未配置 —— 请到「设置」里填写'}`)
+  if (!provider || !hasKey) return 2
+
+  try {
+    const t0 = Date.now()
+    const echo = await chatText({
+      choice,
+      user: '回复两个字：连通',
+      // 给足预算：有的网关默认开思考模式，预算太小会被推理吃光而拿不到文本
+      maxTokens: 512,
+      temperature: 0
+    })
+    console.log(`文本连通 : OK (${Date.now() - t0}ms) → ${echo.trim().slice(0, 30)}`)
+  } catch (e) {
+    console.log(`文本连通 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
+    return 3
+  }
+
+  if (!imagePath) {
+    console.log('视觉识别 : 跳过（未提供图片路径）')
+    return 0
+  }
+
+  try {
+    const t0 = Date.now()
+    const out = await chatVisionJSON({
+      system: '只输出 JSON，不要任何其它文字。',
+      user: '用 JSON 回答：{"firstLine":"图中最上面的那行文字"}',
+      imageAbsPath: imagePath,
+      schema: z.object({ firstLine: z.string() }),
+      maxTokens: 800
+    })
+    console.log(`视觉识别 : OK (${Date.now() - t0}ms) → ${JSON.stringify(out).slice(0, 200)}`)
+    return 0
+  } catch (e) {
+    console.log(`视觉识别 : 失败 → ${e instanceof Error ? e.message : String(e)}`)
+    return 4
+  }
+}
+
 /* ────────────── 生命周期 ────────────── */
 
 registerAssetScheme()
@@ -329,6 +379,16 @@ registerAssetScheme()
 app.whenReady().then(async () => {
   ensureDirs()
   fs.mkdirSync(getTempDir(), { recursive: true })
+
+  // 自检模式：不开窗口，跑完即退出
+  const argv = process.argv.slice(1)
+  const selfIdx = argv.indexOf('--selftest')
+  if (selfIdx >= 0) {
+    const next = argv[selfIdx + 1]
+    const image = next && !next.startsWith('--') ? next : undefined
+    app.exit(await runSelfTest(image))
+    return
+  }
 
   handleAssetProtocol()
   const db = openIndex()

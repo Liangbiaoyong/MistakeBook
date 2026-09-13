@@ -12,6 +12,7 @@ import type {
   MistakeInput,
   MistakeSummary,
   ModelChoice,
+  ModelInfo,
   ProviderConfig,
   PublicModelConfig,
   Result,
@@ -47,7 +48,9 @@ export const IPC = {
   configSetChoice: 'config:setChoice',
   configSetProviderKey: 'config:setProviderKey',
   configUpsertProvider: 'config:upsertProvider',
+  configRemoveProviderKey: 'config:removeProviderKey',
   configTest: 'config:test',
+  configListModels: 'config:listModels',
 
   vaultGet: 'vault:get',
   vaultChoose: 'vault:choose',
@@ -93,8 +96,11 @@ export interface Api {
   configGet(): Promise<Result<PublicModelConfig>>
   configSetChoice(feature: FeatureKey | 'default', choice: ModelChoice): Promise<Result<null>>
   configSetProviderKey(providerId: string, apiKey: string): Promise<Result<null>>
+  configRemoveProviderKey(providerId: string): Promise<Result<null>>
   configUpsertProvider(p: ProviderConfig): Promise<Result<null>>
   configTest(choice: ModelChoice): Promise<Result<{ latencyMs: number; echo: string }>>
+  /** 向厂商拉取可用模型列表；对方不支持时会返回错误说明 */
+  configListModels(providerId: string): Promise<Result<ModelInfo[]>>
 
   vaultGet(): Promise<Result<string>>
   vaultChoose(): Promise<Result<string>>

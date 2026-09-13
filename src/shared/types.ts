@@ -113,11 +113,28 @@ export interface MistakeInput {
 export const FEATURE_KEYS = ['capture', 'analyze', 'generate', 'forecast'] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
+/** OpenAI 兼容协议 */
+export type ApiFormat = 'openai' | 'anthropic'
+
 export interface ProviderConfig {
   id: string
   label: string
-  /** OpenAI 兼容 base URL，如 https://api.deepseek.com */
+  /**
+   * 端点根地址。约定：
+   * - format=openai    → 聊天走 `${baseUrl}/chat/completions`，模型列表走 `${baseUrl}/models`
+   * - format=anthropic → 聊天走 `${baseUrl}/v1/messages`，模型列表走 `${baseUrl}/v1/models`
+   * 所以有的厂商 baseUrl 要带 `/v1`，有的不要，取决于对方怎么挂的。
+   */
   baseUrl: string
+  /** 协议格式，缺省按 openai 兼容处理 */
+  format?: ApiFormat
+  /** 附加请求头，例如 OpenCode Go 要求的 x-opencode-session */
+  headers?: Record<string, string>
+}
+
+export interface ModelInfo {
+  id: string
+  label?: string
 }
 
 export interface ModelChoice {
