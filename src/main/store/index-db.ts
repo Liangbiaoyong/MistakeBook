@@ -4,6 +4,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import type { Mistake, MistakeSummary, ListFilter, StatsOverview } from '@shared/types'
+import { getIndexPath } from './paths'
 
 let dbInstance: DatabaseSync | null = null
 
@@ -13,8 +14,9 @@ let dbInstance: DatabaseSync | null = null
 export function openIndex(): DatabaseSync {
   if (dbInstance) return dbInstance
 
-  dbInstance = new DatabaseSync(':memory:')
-  dbInstance.exec('PRAGMA journal_mode=WAL')
+  // 落盘到 userData/index.db。索引是可重建的派生物，但没必要每次启动都重扫。
+  dbInstance = new DatabaseSync(getIndexPath())
+  dbInstance.exec('PRAGMA journal_mode = WAL')
   initSchema(dbInstance)
 
   return dbInstance

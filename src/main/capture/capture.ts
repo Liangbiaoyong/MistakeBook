@@ -14,7 +14,6 @@ import type { NativeImage } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { randomUUID } from 'crypto'
-import { IPC } from '@shared/ipc'
 import type { CapturePayload } from '@shared/ipc'
 
 /**
@@ -304,16 +303,4 @@ export async function startCapture(): Promise<CapturePayload | null> {
   })()
 
   return inflight
-}
-
-/**
- * 注册 IPC 处理器
- *
- * 处理渲染进程触发的截图请求
- */
-export function registerIpcHandlers(): void {
-  ipcMain.handle(IPC.captureStart, async () => {
-    const payload = await startCapture()
-    return payload
-  })
 }

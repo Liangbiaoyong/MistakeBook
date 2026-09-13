@@ -36,7 +36,7 @@ import {
   getProviderKey,
   getFeatureModel
 } from './config'
-import { startCapture, registerIpcHandlers as registerCaptureIpc } from './capture/capture'
+import { startCapture } from './capture/capture'
 import { registerHotkey, unregisterHotkeys } from './capture/hotkey'
 import { chatVisionJSON } from './llm/client'
 import { ExtractionSchema } from './llm/schema'
@@ -68,6 +68,9 @@ function handle<TArgs extends unknown[], TOut>(
   channel: string,
   fn: (...args: TArgs) => Promise<TOut> | TOut
 ): void {
+  // 先摘掉可能存在的同名 handler：重复注册会直接抛异常，
+  // 而那个异常会中断后续所有 handler 的注册，让整个应用变成空壳。
+  ipcMain.removeHandler(channel)
   ipcMain.handle(channel, async (_e, ...args): Promise<Result<TOut>> => {
     try {
       return { ok: true, data: await fn(...(args as TArgs)) }
@@ -196,8 +199,8 @@ async function testChoice(choice: ModelChoice): Promise<{ latencyMs: number; ech
 /* ────────────── IPC 注册 ────────────── */
 
 function registerHandlers(): void {
-  registerCaptureIpc()
-
+  // 注意：capture:start 由这里注册，而不是调用采集模块的 registerIpcHandlers()。
+  // 截图完成后必须把 payload 推给渲染层去弹录入窗，这条事件流只能有一个主人。
   handle(IPC.captureStart, async (): Promise<null> => {
     await doCapture()
     return null
