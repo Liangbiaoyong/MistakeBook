@@ -4,7 +4,7 @@ import Empty from '../components/Empty'
 import Spinner from '../components/Spinner'
 import Markdown from '../components/Markdown'
 import { Icon, cuCard, cuCtaPrimary, cuCtaGhost, cuNotice } from '../design/tokens'
-import type { MistakeSummary, Mistake, Grade, ReviewQuery, ReviewBatch, ListFilter, ErrorType, ReviewMode, ReviewOrder } from '@shared/types'
+import type { MistakeSummary, Mistake, Grade, ReviewQuery, ReviewBatch, ListFilter, ErrorType, QuestionType, ReviewMode, ReviewOrder } from '@shared/types'
 import { GRADES, ERROR_TYPES, QUESTION_TYPES, STATUSES, REVIEW_ORDERS, REVIEW_MODES } from '@shared/types'
 import { formatMonthDay, isSameDay } from '../lib/format'
 
@@ -62,38 +62,70 @@ export default function Review({ initialScope }: ReviewProps) {
   const seqRef = useRef(0)
   const initialScopeRef = useRef<ListFilter | undefined>(initialScope)
 
-  /* ── 应用初始范围（如果提供） ──────────────────────── */
-  useEffect(() => {
-    if (!initialScopeRef.current) return
-    const scope = initialScopeRef.current
-    initialScopeRef.current = undefined // 只应用一次
+  /** 由一组取值构造查询 —— 引导阶段与 buildQuery 共用，免得两处各写一遍走偏 */
+  const queryFrom = useCallback(
+    (v: {
+      subject: string
+      chapterPoint: string
+      errorType: string
+      questionType: string
+      status: string
+      mode: ReviewMode
+      order: ReviewOrder
+      limit: number
+      onlyWithImage: boolean
+      offset: number
+    }): ReviewQuery => {
+      const scope: ListFilter = {}
+      if (v.subject) scope.subject = v.subject
+      if (v.chapterPoint) {
+        scope.chapter = v.chapterPoint
+        scope.point = v.chapterPoint
+      }
+      if (v.errorType) scope.errorType = v.errorType as ErrorType
+      if (v.questionType) scope.type = v.questionType as QuestionType
+      if (v.status) scope.status = v.status as ListFilter['status']
 
-    setSubject(scope.subject ?? '')
-    setChapterPoint(scope.chapter ?? scope.point ?? '')
-    setErrorType(scope.errorType ?? '')
-    setStatus(scope.status ?? '')
-    setMode('all') // 使用 all 模式避免只过到期的导致死锁
-  }, [])
+      return {
+        scope: Object.keys(scope).length > 0 ? scope : undefined,
+        mode: v.mode,
+        order: v.order,
+        limit: v.limit,
+        offset: v.offset,
+        onlyWithImage: v.onlyWithImage
+      }
+    },
+    []
+  )
 
-  const buildQuery = useCallback((): ReviewQuery => {
-    const scope: ListFilter = {}
-    if (subject) scope.subject = subject
-    if (chapterPoint) {
-      scope.chapter = chapterPoint
-      scope.point = chapterPoint
-    }
-    if (errorType) scope.errorType = errorType as ErrorType
-    if (status) scope.status = status as ListFilter['status']
-
-    return {
-      scope: Object.keys(scope).length > 0 ? scope : undefined,
+  const buildQuery = useCallback(
+    (): ReviewQuery =>
+      queryFrom({
+        subject,
+        chapterPoint,
+        errorType,
+        questionType,
+        status,
+        mode,
+        order,
+        limit,
+        onlyWithImage,
+        offset
+      }),
+    [
+      queryFrom,
+      subject,
+      chapterPoint,
+      errorType,
+      questionType,
+      status,
       mode,
       order,
       limit,
-      offset,
-      onlyWithImage
-    }
-  }, [subject, chapterPoint, errorType, status, mode, order, limit, offset, onlyWithImage])
+      onlyWithImage,
+      offset
+    ]
+  )
 
   const fetchBatch = useCallback(async (query: ReviewQuery, isInitial = false) => {
     if (isInitial) setLoading(true)
@@ -114,7 +146,7 @@ export default function Review({ initialScope }: ReviewProps) {
       setBatch(data)
       const newItems = data?.items ?? []
       setItems(newItems)
-      // 记录本批次的 ID，以便支持重做
+      // 记录本批次的 ID，以便支持重做（会持久化，重启后「再做一遍这批」仍然可用）
       setLastBatchIds(newItems.map((item) => item.id))
       setCurrentIndex(0)
       setShowAnswer(false)
@@ -126,24 +158,60 @@ export default function Review({ initialScope }: ReviewProps) {
     setLoading(false)
   }, [])
 
-  /* ── 挂载时恢复偏好 ──────────────────────────────────── */
+  /**
+   * 引导：**先恢复偏好，再查询**，只查一次。
+   *
+   * 这个顺序是关键。以前是「先按默认值查一次（mode=due）→ 再异步恢复偏好把 mode 改成 all」，
+   * 恢复完不重查，于是屏幕上是 due 的结果（0 条）、控件里是 all 的状态 ——
+   * 空态照着 all 选分支，就对一个书库里有几百道题的人说「还没有错题 / 开始录入错题吧」，
+   * 而且那一支没有任何按钮。用户报的「显示没有题目 / 不能自定义」就是这么来的。
+   */
+  const bootstrappedRef = useRef(false)
   useEffect(() => {
-    void window.api.settingsGet().then(result => {
-      if (result.ok && result.data?.reviewPrefs) {
-        const prefs = result.data.reviewPrefs
-        if (prefs.scope) {
-          setSubject(prefs.scope.subject ?? '')
-          setChapterPoint(prefs.scope.chapter ?? prefs.scope.point ?? '')
-          setErrorType(prefs.scope.errorType ?? '')
-          setStatus(prefs.scope.status ?? '')
-        }
-        setMode(prefs.mode)
-        setOrder(prefs.order)
-        setLimit(prefs.limit)
-        setOnlyWithImage(prefs.onlyWithImage ?? false)
+    let cancelled = false
+    void (async () => {
+      const r = await window.api.settingsGet()
+      if (cancelled) return
+      const prefs = r.ok ? r.data?.reviewPrefs : undefined
+
+      // 从统计页 / 考点页跳进来时会带一个初始范围，它优先于持久化偏好
+      const fromScope = initialScopeRef.current
+      initialScopeRef.current = undefined
+
+      const v = {
+        subject: fromScope?.subject ?? prefs?.scope?.subject ?? '',
+        chapterPoint: fromScope
+          ? (fromScope.chapter ?? fromScope.point ?? '')
+          : (prefs?.scope?.chapter ?? prefs?.scope?.point ?? ''),
+        errorType: fromScope?.errorType ?? prefs?.scope?.errorType ?? '',
+        questionType: fromScope?.type ?? prefs?.scope?.type ?? '',
+        status: fromScope?.status ?? prefs?.scope?.status ?? '',
+        // 带范围跳进来时用 all：用户是冲着「这一章」来的，不该因为都不到期就给一片空白
+        mode: (fromScope ? 'all' : (prefs?.mode ?? 'due')) as ReviewMode,
+        order: (prefs?.order ?? 'due') as ReviewOrder,
+        limit: prefs?.limit ?? 20,
+        onlyWithImage: prefs?.onlyWithImage ?? false,
+        offset: 0
       }
-    })
-  }, [])
+
+      setSubject(v.subject)
+      setChapterPoint(v.chapterPoint)
+      setErrorType(v.errorType)
+      setStatus(v.status)
+      setMode(v.mode)
+      setOrder(v.order)
+      setLimit(v.limit)
+      setOnlyWithImage(v.onlyWithImage)
+      if (prefs?.lastBatchIds?.length) setLastBatchIds(prefs.lastBatchIds)
+
+      // 允许写回偏好（否则挂载时那一轮默认值会先把用户的偏好覆盖掉）
+      bootstrappedRef.current = true
+      setPendingQuery(queryFrom(v))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [queryFrom])
 
   /* ── 应用查询 ─────────────────────────────────────────── */
   useEffect(() => {
@@ -157,6 +225,15 @@ export default function Review({ initialScope }: ReviewProps) {
     setPendingQuery(buildQuery())
   }, [buildQuery])
 
+  const clearFilters = useCallback(() => {
+    setSubject('')
+    setChapterPoint('')
+    setErrorType('')
+    setQuestionType('')
+    setStatus('')
+    setOnlyWithImage(false)
+  }, [])
+
   /* ── 持久化偏好 ───────────────────────────────────────── */
   const persistPrefs = useCallback(async () => {
     const scope: ListFilter = {}
@@ -166,6 +243,7 @@ export default function Review({ initialScope }: ReviewProps) {
       scope.point = chapterPoint
     }
     if (errorType) scope.errorType = errorType as ErrorType
+    if (questionType) scope.type = questionType as QuestionType
     if (status) scope.status = status as ListFilter['status']
 
     await window.api.settingsSet({
@@ -174,14 +252,28 @@ export default function Review({ initialScope }: ReviewProps) {
         mode,
         order,
         limit,
-        onlyWithImage
+        onlyWithImage,
+        lastBatchIds
       }
     })
-  }, [subject, chapterPoint, errorType, status, mode, order, limit, onlyWithImage])
+  }, [
+    subject,
+    chapterPoint,
+    errorType,
+    questionType,
+    status,
+    mode,
+    order,
+    limit,
+    onlyWithImage,
+    lastBatchIds
+  ])
 
   useEffect(() => {
+    // 引导还没完成时不要写回：那一轮写的是默认值，会把用户的偏好冲掉
+    if (!bootstrappedRef.current) return
     void persistPrefs()
-  }, [mode, order, limit, onlyWithImage, subject, chapterPoint, errorType, status, persistPrefs])
+  }, [mode, order, limit, onlyWithImage, subject, chapterPoint, errorType, questionType, status, lastBatchIds, persistPrefs])
 
   /* ── 换一批 ────────────────────────────────────────────── */
   const nextBatch = useCallback(() => {
@@ -202,10 +294,6 @@ export default function Review({ initialScope }: ReviewProps) {
     })
   }, [lastBatchIds, buildQuery])
 
-  /* ── 初次加载 ──────────────────────────────────────────── */
-  useEffect(() => {
-    setPendingQuery(buildQuery())
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── 键盘快捷键 ────────────────────────────────────────── */
   const handleGrade = useCallback(async (grade: Grade) => {
@@ -330,148 +418,140 @@ export default function Review({ initialScope }: ReviewProps) {
   }, [currentId])
 
   /* ── 渲染 ────────────────────────────────────────────────── */
-  if (loading && !batch) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Spinner label="加载待复习错题..." />
-      </div>
-    )
-  }
+  const libraryTotal = batch?.libraryTotal ?? 0
+  const librarySubjects = batch?.librarySubjects ?? []
+  const hasFilters = Boolean(
+    subject || chapterPoint || errorType || questionType || status || onlyWithImage
+  )
 
-  if (error && !batch) {
-    return (
-      <div className="p-8">
-        <div className={cuNotice('error')}>{error}</div>
-        <button onClick={applyFilters} className={`mt-4 ${cuCtaGhost} px-4 py-2 text-sm`}>
-          重试
-        </button>
-      </div>
-    )
-  }
+  const filtersPanel = (
+    <div className="mb-6 flex flex-wrap items-center gap-3">
+      <select
+        value={subject}
+        onChange={e => setSubject(e.target.value)}
+        className="cu-input !rounded-full text-sm"
+        aria-label="按科目筛选"
+      >
+        <option value="">全部科目</option>
+        {/* 选项来自书库真实科目 —— 以前这里只有「全部科目」一项，根本选不了 */}
+        {librarySubjects.map(s => (
+          <option key={s} value={s}>{s}</option>
+        ))}
+      </select>
 
-  if (items.length === 0 && batch) {
-    const hasFilters = subject || chapterPoint || errorType || questionType || status
-    return (
-      <div className="p-8">
-        <PageHeader title="复习" subtitle="0 道错题" />
-        {hasFilters ? (
-          <Empty
-            icon="review"
-            title="还没有错题"
-            hint="当前筛选范围内没有匹配的错题"
-            action={
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setSubject('')
-                    setChapterPoint('')
-                    setErrorType('')
-                    setQuestionType('')
-                    setStatus('')
-                    setOnlyWithImage(false)
-                  }}
-                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
-                >
-                  清除筛选
-                </button>
-                {lastBatchIds.length > 0 && (
-                  <button
-                    onClick={redoBatch}
-                    className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
-                  >
-                    <Icon name="refresh" className="h-4 w-4 mr-2" />
-                    再做一遍上次这批
-                  </button>
-                )}
-              </div>
-            }
-          />
-        ) : mode === 'due' ? (
-          <Empty
-            icon="review"
-            title="这个范围内今天没有到期的错题"
-            hint="可以切换模式或再做一遍上次练习的题目"
-            action={
-              <div className="flex gap-3">
-                {lastBatchIds.length > 0 && (
-                  <button
-                    onClick={redoBatch}
-                    className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
-                  >
-                    <Icon name="refresh" className="h-4 w-4 mr-2" />
-                    再做一遍上次这批
-                  </button>
-                )}
-                <button
-                  onClick={() => setMode('all')}
-                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
-                >
-                  切到「全部范围内」
-                </button>
-                <button
-                  onClick={() => setFiltersExpanded(true)}
-                  className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}
-                >
-                  换个范围
-                </button>
-              </div>
-            }
-          />
-        ) : (
-          <Empty
-            icon="review"
-            title="还没有错题"
-            hint="开始录入错题吧"
-          />
-        )}
-      </div>
-    )
-  }
+      <input
+        type="text"
+        value={chapterPoint}
+        onChange={e => setChapterPoint(e.target.value)}
+        placeholder="章节/知识点"
+        className="cu-input !rounded-full text-sm"
+        aria-label="按章节或知识点搜索"
+      />
 
-  if (currentIndex >= items.length && batch) {
-    return (
-      <div className="p-8">
-        <PageHeader
-          title="复习"
-          subtitle={`全部完成 ${batch.total} 道`}
-          actions={
-            <button onClick={nextBatch} className={`${cuCtaGhost} px-3.5 py-1.5 text-sm`}>
-              <Icon name="refresh" className="h-4 w-4" />
-              换一批
-            </button>
-          }
+      <select
+        value={errorType}
+        onChange={e => setErrorType(e.target.value)}
+        className="cu-input !rounded-full text-sm"
+        aria-label="按错因筛选"
+      >
+        <option value="">全部错因</option>
+        {ERROR_TYPES.map(t => (
+          <option key={t} value={t}>{t}</option>
+        ))}
+      </select>
+
+      <select
+        value={questionType}
+        onChange={e => setQuestionType(e.target.value)}
+        className="cu-input !rounded-full text-sm"
+        aria-label="按题型筛选"
+      >
+        <option value="">全部题型</option>
+        {QUESTION_TYPES.map(t => (
+          <option key={t} value={t}>{t}</option>
+        ))}
+      </select>
+
+      <select
+        value={status}
+        onChange={e => setStatus(e.target.value)}
+        className="cu-input !rounded-full text-sm"
+        aria-label="按状态筛选"
+      >
+        <option value="">全部状态</option>
+        {STATUSES.map(s => (
+          <option key={s} value={s}>
+            {s === 'new' ? '新题' : s === 'reviewing' ? '复习中' : '已掌握'}
+          </option>
+        ))}
+      </select>
+
+      <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={onlyWithImage}
+          onChange={e => setOnlyWithImage(e.target.checked)}
+          className="cu-input !rounded-full"
         />
-        <Empty
-          icon="check"
-          title="这批题目已全部完成"
-          hint="可以重新练习这批题目，或开始新的一轮复习"
-          action={
-            <div className="flex gap-3">
-              {lastBatchIds.length > 0 && (
-                <button onClick={redoBatch} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
-                  <Icon name="refresh" className="h-4 w-4 mr-2" />
-                  再做一遍这批
-                </button>
-              )}
-              <button onClick={nextBatch} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
-                <Icon name="refresh" className="h-4 w-4 mr-2" />
-                换一批
-              </button>
-              <button onClick={() => setFiltersExpanded(true)} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
-                换个范围
-              </button>
-            </div>
-          }
-        />
-      </div>
-    )
-  }
+        只看有原图
+      </label>
 
-  return (
+      <div className="flex items-center gap-1 border border-white/20 rounded-full p-0.5">
+        {REVIEW_MODES.map(m => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-3 py-1 text-sm rounded-full transition-colors ${
+              mode === m ? 'bg-white/20 text-white font-medium' : 'text-white/60 hover:text-white/80'
+            }`}
+          >
+            {m === 'due' ? '只过到期的' : '全部范围内'}
+          </button>
+        ))}
+      </div>
+
+      <select
+        value={order}
+        onChange={e => setOrder(e.target.value as ReviewOrder)}
+        className="cu-input !rounded-full text-sm"
+        aria-label="按顺序筛选"
+      >
+        {REVIEW_ORDERS.map(o => (
+          <option key={o} value={o}>
+            {o === 'due' ? '按到期' : o === 'random' ? '随机' : o === 'created' ? '按录入时间' : '按难度'}
+          </option>
+        ))}
+      </select>
+
+      <select
+        value={limit}
+        onChange={e => setLimit(Number(e.target.value))}
+        className="cu-input !rounded-full text-sm"
+        aria-label="一批数量"
+      >
+        {LIMIT_OPTIONS.map(l => (
+          <option key={l} value={l}>{LIMIT_LABELS[l]}</option>
+        ))}
+      </select>
+
+      <button onClick={applyFilters} className={`${cuCtaPrimary} !px-5 !py-2 text-sm`}>
+        开始复习
+      </button>
+    </div>
+  )
+
+  /**
+   * 统一的页面骨架 —— 筛选栏**任何状态下都在**。
+   *
+   * 以前筛选栏只写在「有题」那一支的 return 里，其它分支各自 return 一整个页面，
+   * 于是空态下连「换个范围」都点不到。用户的原话是「为什么还是不能自定义」——
+   * 根本原因就是它压根没渲染出来。
+   */
+  const shell = (subtitle: string, body: React.ReactNode): React.JSX.Element => (
     <div className="p-8 flex flex-col h-full">
       <PageHeader
         title="复习"
-        subtitle={batch ? `第 ${batch.from}–${batch.to} 题 · 共 ${batch.total} 题` : '加载中...'}
+        subtitle={subtitle}
         actions={
           <div className="flex gap-2">
             <button
@@ -489,122 +569,130 @@ export default function Review({ initialScope }: ReviewProps) {
           </div>
         }
       />
+      {filtersExpanded && filtersPanel}
+      {body}
+    </div>
+  )
 
-      {/* ── 范围筛选栏 ──────────────────────────────────── */}
-      {filtersExpanded && (
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <select
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            className="cu-input !rounded-full text-sm"
-            aria-label="按科目筛选"
-          >
-            <option value="">全部科目</option>
-          </select>
+  if (loading && !batch) {
+    return shell(
+      '加载中…',
+      <div className="flex flex-1 items-center justify-center">
+        <Spinner label="加载待复习错题..." />
+      </div>
+    )
+  }
 
-          <input
-            type="text"
-            value={chapterPoint}
-            onChange={e => setChapterPoint(e.target.value)}
-            placeholder="章节/知识点"
-            className="cu-input !rounded-full text-sm"
-            aria-label="按章节或知识点搜索"
-          />
+  if (error && !batch) {
+    return shell(
+      '加载失败',
+      <div>
+        <div className={cuNotice('error')}>{error}</div>
+        <button onClick={applyFilters} className={`mt-4 ${cuCtaGhost} px-4 py-2 text-sm`}>
+          重试
+        </button>
+      </div>
+    )
+  }
 
-          <select
-            value={errorType}
-            onChange={e => setErrorType(e.target.value)}
-            className="cu-input !rounded-full text-sm"
-            aria-label="按错因筛选"
-          >
-            <option value="">全部错因</option>
-            {ERROR_TYPES.map(t => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
+  if (items.length === 0 && batch) {
+    // 空态必须分清「一道题都没录」和「都复习过了、今天没到期」——
+    // 只看命中数会把后者讲成前者，等于叫一个有几百道错题的人去录入。
+    const redoButton = lastBatchIds.length > 0 && (
+      <button onClick={redoBatch} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+        <Icon name="refresh" className="h-4 w-4 mr-2" />
+        再做一遍上次这批（{lastBatchIds.length} 题）
+      </button>
+    )
 
-          <select
-            value={questionType}
-            onChange={e => setQuestionType(e.target.value)}
-            className="cu-input !rounded-full text-sm"
-            aria-label="按题型筛选"
-          >
-            <option value="">全部题型</option>
-            {QUESTION_TYPES.map(t => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
+    if (libraryTotal === 0) {
+      return shell(
+        '0 道错题',
+        <Empty icon="library" title="还没有错题" hint="先截图录入几道，复习页就会有题" />
+      )
+    }
 
-          <select
-            value={status}
-            onChange={e => setStatus(e.target.value)}
-            className="cu-input !rounded-full text-sm"
-            aria-label="按状态筛选"
-          >
-            <option value="">全部状态</option>
-            {STATUSES.map(s => (
-              <option key={s} value={s}>
-                {s === 'new' ? '新题' : s === 'reviewing' ? '复习中' : '已掌握'}
-              </option>
-            ))}
-          </select>
-
-          <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={onlyWithImage}
-              onChange={e => setOnlyWithImage(e.target.checked)}
-              className="cu-input !rounded-full"
-            />
-            只看有原图
-          </label>
-
-          <div className="flex items-center gap-1 border border-white/20 rounded-full p-0.5">
-            {REVIEW_MODES.map(m => (
+    if (mode === 'due') {
+      return shell(
+        '今天 0 道到期',
+        <Empty
+          icon="review"
+          title="今天没有到期的错题"
+          hint={`书库里共 ${libraryTotal} 道${
+            hasFilters ? '，但当前范围内一道都没到期' : ''
+          }。间隔重复就是这样：没到期的不用提前刷。想现在练就切到「全部范围内」。`}
+          action={
+            <div className="flex flex-wrap justify-center gap-3">
               <button
-                key={m}
-                onClick={() => setMode(m)}
-                className={`px-3 py-1 text-sm rounded-full transition-colors ${
-                  mode === m
-                    ? 'bg-white/20 text-white font-medium'
-                    : 'text-white/60 hover:text-white/80'
-                }`}
+                onClick={() => setMode('all')}
+                className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}
               >
-                {m === 'due' ? '只过到期的' : '全部范围内'}
+                切到「全部范围内」
               </button>
-            ))}
+              {redoButton}
+              {hasFilters && (
+                <button onClick={clearFilters} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+                  清除筛选
+                </button>
+              )}
+            </div>
+          }
+        />
+      )
+    }
+
+    return shell(
+      '0 道错题',
+      <Empty
+        icon="review"
+        title={hasFilters ? '这个范围里一道题都没有' : '暂时没有可复习的题'}
+        hint={
+          hasFilters
+            ? `书库里共 ${libraryTotal} 道，但没有一道落在这个范围里。换个范围或清除筛选试试。`
+            : `书库里共 ${libraryTotal} 道。`
+        }
+        action={
+          <div className="flex flex-wrap justify-center gap-3">
+            {hasFilters && (
+              <button onClick={clearFilters} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
+                清除筛选
+              </button>
+            )}
+            {redoButton}
           </div>
+        }
+      />
+    )
+  }
 
-          <select
-            value={order}
-            onChange={e => setOrder(e.target.value as ReviewOrder)}
-            className="cu-input !rounded-full text-sm"
-            aria-label="按顺序筛选"
-          >
-            {REVIEW_ORDERS.map(o => (
-              <option key={o} value={o}>
-                {o === 'due' ? '按到期' : o === 'random' ? '随机' : o === 'created' ? '按录入时间' : '按难度'}
-              </option>
-            ))}
-          </select>
+  if (currentIndex >= items.length && batch) {
+    return shell(
+      `全部完成 ${batch.total} 道`,
+      <Empty
+        icon="check"
+        title="这批题目已全部完成"
+        hint="可以重新练习这批题目，或开始新的一轮复习"
+        action={
+          <div className="flex flex-wrap justify-center gap-3">
+            {lastBatchIds.length > 0 && (
+              <button onClick={redoBatch} className={`${cuCtaPrimary} !px-5 !py-2.5 text-sm`}>
+                <Icon name="refresh" className="h-4 w-4 mr-2" />
+                再做一遍这批
+              </button>
+            )}
+            <button onClick={nextBatch} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
+              <Icon name="refresh" className="h-4 w-4 mr-2" />
+              换一批
+            </button>
+          </div>
+        }
+      />
+    )
+  }
 
-          <select
-            value={limit}
-            onChange={e => setLimit(Number(e.target.value))}
-            className="cu-input !rounded-full text-sm"
-            aria-label="一批数量"
-          >
-            {LIMIT_OPTIONS.map(l => (
-              <option key={l} value={l}>{LIMIT_LABELS[l]}</option>
-            ))}
-          </select>
-
-          <button onClick={applyFilters} className={`${cuCtaPrimary} !px-5 !py-2 text-sm`}>
-            开始复习
-          </button>
-        </div>
-      )}
-
+  // 走到这里就是在做题：题目卡片本体。头部与筛选栏由 shell() 统一提供。
+  const cardBody = (
+    <>
       {/* ── 换一批通知 ──────────────────────────────────── */}
       {wrapNotice && (
         <div className={`${cuNotice('info')} mb-4 text-center`}>
@@ -744,6 +832,11 @@ export default function Review({ initialScope }: ReviewProps) {
           )}
         </div>
       </div>
-    </div>
+    </>
+  )
+
+  return shell(
+    batch ? `第 ${batch.from}–${batch.to} 题 · 共 ${batch.total} 题` : '加载中…',
+    cardBody
   )
 }

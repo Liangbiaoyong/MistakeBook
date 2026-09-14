@@ -217,6 +217,11 @@ export function querySummaries(db: DatabaseSync, filter?: ListFilter): MistakeSu
     params.push(`%${filter.point}%`)
   }
 
+  if (filter?.type) {
+    conditions.push('m.type = ?')
+    params.push(filter.type)
+  }
+
   if (filter?.errorType) {
     conditions.push('m.error_type = ?')
     params.push(filter.errorType)
@@ -434,6 +439,14 @@ export function dueList(db: DatabaseSync, today: string): MistakeSummary[] {
 export function countRows(db: DatabaseSync): number {
   const result = db.prepare('SELECT COUNT(*) as cnt FROM mistakes').get() as { cnt: number }
   return result.cnt
+}
+
+/** 书库里出现过的科目（用来填满复习页/列表页的科目下拉） */
+export function distinctSubjects(db: DatabaseSync): string[] {
+  const rows = db.prepare(
+    'SELECT DISTINCT subject FROM mistakes WHERE subject IS NOT NULL AND subject != \'\' ORDER BY subject'
+  ).all() as Array<{ subject: string }>
+  return rows.map((r) => r.subject)
 }
 
 /* ────────────── 查重候选 ────────────── */

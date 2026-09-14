@@ -323,6 +323,16 @@ export interface ReviewBatch {
   /** 本批实际是第一题到第几题 */
   from: number
   to: number
+  /**
+   * 书库里一共有多少道错题（**不受范围与模式影响**）。
+   *
+   * 空态必须靠它说话：`total=0` 既可能是「这道题都没录」也可能是「都复习过了今天没到期」，
+   * 只看 total 会把「今天没有到期的」讲成「还没有错题 / 开始录入错题吧」——
+   * 那是在叫一个已经有几百道错题的人去录入。
+   */
+  libraryTotal: number
+  /** 书库里出现过的科目，用来把「全部科目」那个下拉填满（否则它是个选不了的摆设） */
+  librarySubjects: string[]
 }
 
 /* ────────────── 分析记录 ────────────── */
@@ -355,6 +365,12 @@ export interface ReviewPrefs {
   order: ReviewOrder
   limit: number
   onlyWithImage?: boolean
+  /**
+   * 上一次练的那批题 id。
+   * 必须持久化：否则一重启就没了，「再做一遍这批」在**最需要它的时候**（练完一轮、
+   * 隔天想回顾）恰好不可用 —— 而页面此时又因为没有到期题而空着。
+   */
+  lastBatchIds?: string[]
 }
 
 /* ────────────── 通用 ────────────── */
@@ -385,6 +401,8 @@ export interface ListFilter {
   subject?: string
   chapter?: string
   point?: string
+  /** 题型。⚠ 加了这个字段就必须在 querySummaries 里真的用上，否则又是一处「看着能筛、其实没接」 */
+  type?: QuestionType
   errorType?: ErrorType
   status?: Status
   /** 全文关键词 */

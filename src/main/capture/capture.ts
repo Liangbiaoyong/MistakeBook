@@ -157,11 +157,19 @@ function showOverlay(
     }
 
     // 创建 overlay 窗口
+    //
+    // ⚠ `fullscreen: true` 不是为了好看，是**唯一能盖住 Windows 任务栏的办法**。
+    // 实测（把纯色铺满 overlay 再抓屏、量屏幕底部那条的颜色）：
+    //   bounds + alwaysOnTop(true)          → 任务栏仍在最上层
+    //   bounds + alwaysOnTop('screen-saver') → 任务栏仍在最上层（Windows 上 level 不起作用）
+    //   fullscreen: true + transparent: true → 任务栏被盖住 ✓
+    // 不盖住的话，用户看到的「全屏」底部仍旧是一条实时任务栏：既不能框选，也像是没全屏。
     overlayWin = new BrowserWindow({
       x,
       y,
       width,
       height,
+      fullscreen: true,
       frame: false,
       transparent: true,
       alwaysOnTop: true,

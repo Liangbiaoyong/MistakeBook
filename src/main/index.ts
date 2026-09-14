@@ -48,7 +48,7 @@ import {
 import { findDuplicates, findDuplicateGroups, groupToHits } from './store/dedup'
 import { appendReviewEvent } from './store/reviews-log'
 import { localDate } from './store/trend'
-import { openIndex, initSchema, statsOverview, countRows, recordReview } from './store/index-db'
+import { openIndex, initSchema, statsOverview, countRows, recordReview, distinctSubjects } from './store/index-db'
 import {
   getPublicConfig,
   getProviderById,
@@ -499,6 +499,11 @@ function registerHandlers(): void {
   })
 
   handle(IPC.reviewQuery, async (q: ReviewQuery): Promise<ReviewBatch> => {
+    // 空态要靠这两个数说话，所以每次查询都带上（都是极便宜的 COUNT / DISTINCT）
+    const { db } = openIndex()
+    initSchema(db)
+    const facets = { libraryTotal: countRows(db), librarySubjects: distinctSubjects(db) }
+
     // 「再做一遍这一批」：直接按给定 id 顺序取。
     // 那批题刚评过分、next 已经推到未来，用 mode:'due' 重查只会拿到 0 条 ——
     // 这正是「做完之后显示 0 题、又不让重做」的来源。
@@ -509,7 +514,13 @@ function registerHandlers(): void {
         .map((id) => byId.get(id))
         .filter((x): x is MistakeSummary => x !== undefined)
       logLine('review', `重做指定批次：${items.length} 条`)
-      return { items, total: items.length, from: items.length ? 1 : 0, to: items.length }
+      return {
+        items,
+        total: items.length,
+        from: items.length ? 1 : 0,
+        to: items.length,
+        ...facets
+      }
     }
 
     // 换一批：范围过滤交给 store（它有多字段模糊搜索），到期/排序/分批在 JS 侧做
@@ -555,7 +566,8 @@ function registerHandlers(): void {
       items,
       total,
       from: items.length > 0 ? offset + 1 : 0,
-      to: offset + items.length
+      to: offset + items.length,
+      ...facets
     }
   })
 

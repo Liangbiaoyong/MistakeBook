@@ -152,10 +152,34 @@ npm run typecheck   # 必须 0 错误
 npm test            # 单元测试
 npm run build       # 三端编译
 npm run dist        # 打 Windows 安装包（输出到 release/）
+npx electron . --selftest   # 打包/未打包都能跑：配置 → 解密 Key → 协议层 → 文本/视觉
 ```
+
+### 回归检查（改动对应界面后必须跑）
+
+这三个脚本都是**带断言的**，退出码即结论；只看到「已保存 xxx.png」不代表通过。
+
+```bash
+npx electron scripts/review-check.cjs         # 复习页：换一批真的换批、绕回提示、键盘评分
+npx electron scripts/review-empty-check.cjs   # 复习页空态：书库有题时不许说「还没有错题」、筛选栏必须在
+npx electron scripts/notify-check.cjs         # 通知窗四状态
+SHOT=<任意一张png> npx electron scripts/screenshots.cjs   # 生成 README 截图 + 公式渲染断言
+```
+
+⚠ `screenshots.cjs` **必须给 `SHOT` 环境变量**（一张当样例的图片路径），否则脚本里是 `undefined`，
+会在 `readFileSync` 处崩掉。它同时断言书库/详情/查重面板的公式真的被 KaTeX 渲染、没有残留 `$`。
+
+**为什么这么强调断言**：这个项目最常出的一类问题是「看起来有的东西，实际没接上」——
+`status` 是死字段、`statsWindowDays` 是死字段、题型筛选没进查询、
+通知浮层卡在「正在识别」而自动保存从不启动。几处都是**肉眼看不出**来的，
+其中「识别完成」那张截图甚至一直截的是错页面还挂进了 README。**能断言的就别用眼睛看。**
 
 ## 已知限制
 
 1. 截图 v1 **只支持光标所在的那块显示器**，多屏未跨屏拼接。
 2. 视觉模型单图 token 上限约 1024，**截图务必裁紧**（只截一道题）。
-3. DeepSeek 视觉能力尚未在真实 Key 上端到端验证过 —— 配置层可随时换 Qwen-VL / GLM-4V。
+3. 视觉识别**已在真实 Key 上跑通**（`--selftest` 的「视觉识别」一项会给耗时）。
+   但 OpenCode Go 是**按模型名决定路由**的：只有 `claude-sonnet-4-6` 会被路由到支持读图的模型，
+   填 `gpt-4o` / `qwen-vl-max` 之类会落到看不到图的模型上（模型自己会说收到 `[Unsupported Image]`）。
+4. 框选界面靠 `fullscreen: true` 盖住任务栏（`alwaysOnTop` 在 Windows 上盖不住，`level` 也不起作用）。
+   改这块时别把 `fullscreen` 去掉，否则底部会露出实时任务栏。
