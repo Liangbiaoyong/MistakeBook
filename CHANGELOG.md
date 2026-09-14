@@ -2,7 +2,10 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [0.2.5] - 2026-09-14
+
+第一个公开发布版。更早的 0.2.x 只作为 git 提交存在过，从未对外发布 —— 所以下面这一整段
+（项目从零到 0.2.5 的全部变更）都归在这一版里。
 
 ### 修复
 
@@ -318,4 +321,4 @@
 - **存储采用「文件为真相源 + SQLite 为派生索引」**：数据永远可由 Markdown 重建
 - **不提供「押题」功能**：改写为「高频考点排行」，依据错题分布排优先级
 
-[未发布]: https://github.com/Liangbiaoyong/MistakeBook/commits/main
+[0.2.5]: https://github.com/Liangbiaoyong/MistakeBook/releases/tag/v0.2.5
