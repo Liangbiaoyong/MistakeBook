@@ -3,9 +3,11 @@
  * 索引可从 vault 的 Markdown 文件重建。
  */
 import { DatabaseSync } from 'node:sqlite'
-import type { Mistake, MistakeSummary, ListFilter, StatsOverview } from '@shared/types'
+import type { Mistake, MistakeSummary, ListFilter, StatsOverview, ReviewEvent } from '@shared/types'
 import { getIndexPath } from './paths'
 import { questionPreview } from './frontmatter'
+import { fillDays, localDate, periodComparison } from './trend'
+import type { DedupCandidate } from './dedup'
 
 let dbInstance: DatabaseSync | null = null
 
@@ -95,10 +97,21 @@ export function initSchema(db: DatabaseSync): void {
       FOREIGN KEY (mistake_id) REFERENCES mistakes(id)
     );
 
+    -- 复习事件（派生自 vault 的 reviews.jsonl，重建索引时由它回填）。
+    -- 这张表是唯一无法只靠 Markdown 重建的东西，所以真相源在 vault 里，见 reviews-log.ts。
+    CREATE TABLE IF NOT EXISTS reviews (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      mistake_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      grade TEXT NOT NULL,
+      round INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_mistakes_subject ON mistakes(subject);
     CREATE INDEX IF NOT EXISTS idx_mistakes_status ON mistakes(status);
     CREATE INDEX IF NOT EXISTS idx_mistakes_error_type ON mistakes(error_type);
     CREATE INDEX IF NOT EXISTS idx_points_point ON points(point);
+    CREATE INDEX IF NOT EXISTS idx_reviews_date ON reviews(date);
   `)
 }
 
@@ -268,10 +281,30 @@ export function querySummaries(db: DatabaseSync, filter?: ListFilter): MistakeSu
   }))
 }
 
-/**
- * 统计概览
- */
-export function statsOverview(db: DatabaseSync): StatsOverview {
+/* ────────────── 复习事件 ────────────── */
+
+/** 追加一条评分事件 */
+export function recordReview(db: DatabaseSync, e: ReviewEvent): void {
+  db.prepare('INSERT INTO reviews (mistake_id, date, grade, round) VALUES (?, ?, ?, ?)').run(
+    e.id,
+    e.date,
+    e.grade,
+    e.round
+  )
+}
+
+/** 重建索引用：清空后由 reviews.jsonl 回填 */
+export function replaceReviews(db: DatabaseSync, events: ReviewEvent[]): void {
+  db.exec('DELETE FROM reviews')
+  const stmt = db.prepare(
+    'INSERT INTO reviews (mistake_id, date, grade, round) VALUES (?, ?, ?, ?)'
+  )
+  for (const e of events) stmt.run(e.id, e.date, e.grade, e.round)
+}
+
+/** 统计概览 */
+export function statsOverview(db: DatabaseSync, windowDaysRaw: number): StatsOverview {
+  const windowDays = clampWindow(windowDaysRaw)
   const total = (db.prepare('SELECT COUNT(*) as cnt FROM mistakes').get() as { cnt: number }).cnt
 
   const bySubject = (db.prepare(
@@ -309,22 +342,51 @@ export function statsOverview(db: DatabaseSync): StatsOverview {
     count: Number(row.count)
   }))
 
-  // 使用JS获取本地日期，而不是SQLite的date('now')
-  const localDate = getLocalDate()
+  // 一律用本地日期，不用 SQLite 的 date('now')（那是 UTC，凌晨会算到前一天）
+  const today = getLocalDate()
 
-  // 最近 7 天每日新增（使用本地日期）
-  const daily = db.prepare(`
-    SELECT date(created) as date, COUNT(*) as count
+  // 每天新增（本地日期）
+  const addedRows = db.prepare(`
+    SELECT date(created) as d, COUNT(*) as n
     FROM mistakes
-    WHERE created >= date(?, '-7 days')
     GROUP BY date(created)
-    ORDER BY date ASC
-  `).all(localDate) as { date: string; count: number }[]
+  `).all() as Array<{ d: string; n: number }>
 
-  // 待复习数量（使用本地日期）
+  // 每天复习量与其中「忘了」的次数。这里要跨两个窗口，所以不按窗口过滤，全量交给 JS 切。
+  const reviewRows = db.prepare(`
+    SELECT date as d, COUNT(*) as n,
+           SUM(CASE WHEN grade = 'again' THEN 1 ELSE 0 END) as forgot
+    FROM reviews
+    GROUP BY date
+  `).all() as Array<{ d: string; n: number; forgot: number }>
+
+  const merged = new Map<string, { date: string; added: number; reviewed: number }>()
+  for (const r of addedRows) {
+    const cur = merged.get(r.d) ?? { date: r.d, added: 0, reviewed: 0 }
+    cur.added += Number(r.n)
+    merged.set(r.d, cur)
+  }
+  for (const r of reviewRows) {
+    const cur = merged.get(r.d) ?? { date: r.d, added: 0, reviewed: 0 }
+    cur.reviewed += Number(r.n)
+    merged.set(r.d, cur)
+  }
+
+  const daily = fillDays([...merged.values()], windowDays, today)
+
+  const forgotByDate = new Map<string, number>()
+  for (const r of reviewRows) forgotByDate.set(r.d, Number(r.forgot))
+
+  const trend = periodComparison(daily, forgotByDate, windowDays, today)
+
+  const reviewEvents = (
+    db.prepare('SELECT COUNT(*) as cnt FROM reviews').get() as { cnt: number }
+  ).cnt
+
+  // 待复习数量（本地日期）
   const dueCount = (db.prepare(
     'SELECT COUNT(*) as cnt FROM mistakes WHERE next_review IS NOT NULL AND next_review <= ?'
-  ).get(localDate) as { cnt: number }).cnt
+  ).get(today) as { cnt: number }).cnt
 
   return {
     total,
@@ -333,20 +395,25 @@ export function statsOverview(db: DatabaseSync): StatsOverview {
     byPoint,
     byChapter,
     byStatus: byStatus as StatsOverview['byStatus'],
+    windowDays,
     daily,
+    trend,
+    reviewEvents,
     dueCount
   }
+}
+
+/** 窗口天数收进合理区间，避免设置里手滑写成 0 或 99999 */
+function clampWindow(n: number): number {
+  if (!Number.isFinite(n)) return 30
+  return Math.min(3650, Math.max(1, Math.round(n)))
 }
 
 /**
  * 获取本地日期 YYYY-MM-DD 格式
  */
 function getLocalDate(): string {
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  return localDate(new Date())
 }
 
 /**
@@ -367,4 +434,34 @@ export function dueList(db: DatabaseSync, today: string): MistakeSummary[] {
 export function countRows(db: DatabaseSync): number {
   const result = db.prepare('SELECT COUNT(*) as cnt FROM mistakes').get() as { cnt: number }
   return result.cnt
+}
+
+/* ────────────── 查重候选 ────────────── */
+
+/**
+ * 取出查重用的候选。
+ *
+ * 注意这里拿的是**完整题干** `question`，不是列表用的 `questionHead` ——
+ * 后者被截断到几十个字，截断后的短句之间相似度会失真（这正是列表预览不能拿来查重的原因）。
+ *
+ * @param subject 限定科目。单条查重时按科目缩小范围；整库扫描时不传。
+ */
+export function duplicateCandidates(db: DatabaseSync, subject?: string): DedupCandidate[] {
+  const base = `SELECT m.id, m.subject, m.created, m.question, m.status, m.review_round, m.image
+    FROM mistakes m`
+  const rows = (
+    subject
+      ? db.prepare(`${base} WHERE m.subject = ? ORDER BY m.created ASC`).all(subject)
+      : db.prepare(`${base} ORDER BY m.subject ASC, m.created ASC`).all()
+  ) as Array<Record<string, unknown>>
+
+  return rows.map((row) => ({
+    id: row.id as string,
+    subject: row.subject as string,
+    created: row.created as string,
+    question: (row.question as string) ?? '',
+    status: row.status as DedupCandidate['status'],
+    reviewRound: Number(row.review_round ?? 0),
+    hasImage: Boolean(row.image)
+  }))
 }

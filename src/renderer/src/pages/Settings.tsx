@@ -39,6 +39,7 @@ export default function Settings() {
   const [examDate, setExamDate] = useState('')
   const [hotkey, setHotkey] = useState('')
   const [autoSaveSeconds, setAutoSaveSeconds] = useState<number>(30)
+  const [statsWindowDays, setStatsWindowDays] = useState<number>(30)
   const [planMsg, setPlanMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [savingPlan, setSavingPlan] = useState(false)
   const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
@@ -64,6 +65,7 @@ export default function Settings() {
       setExamDate(settingsResult.data.examDate ?? '')
       setHotkey(settingsResult.data.hotkey)
       setAutoSaveSeconds(settingsResult.data.autoSaveSeconds ?? 30)
+      setStatsWindowDays(settingsResult.data.statsWindowDays ?? 30)
     }
     setLoading(false)
   }, [])
@@ -74,11 +76,13 @@ export default function Settings() {
     const result = await window.api.settingsSet({
       examDate: examDate || undefined,
       hotkey: hotkey.trim() || undefined,
-      autoSaveSeconds: autoSaveSeconds
+      autoSaveSeconds: autoSaveSeconds,
+      statsWindowDays: statsWindowDays
     })
     if (result.ok && result.data) {
       setHotkey(result.data.hotkey)
       setAutoSaveSeconds(result.data.autoSaveSeconds ?? 30)
+      setStatsWindowDays(result.data.statsWindowDays ?? 30)
       setPlanMsg({ kind: 'ok', text: '已保存' })
     } else {
       setPlanMsg({ kind: 'error', text: result.error ?? '保存失败' })
@@ -673,6 +677,42 @@ export default function Settings() {
               className="cu-input w-[200px]"
             />
             <span className="text-white/40 text-xs">范围 0–120 秒</span>
+          </div>
+
+          <div className="cu-divider my-4" />
+
+          <div className="text-white/70 text-sm">统计窗口</div>
+          <p className="text-white/50 text-xs mt-1 mb-3">
+            统计页的趋势曲线和「本周期 vs 上一周期」按这个天数计算。
+            备考前期可以看长一点，冲刺阶段看短一点更能反映最近的状态。
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={statsWindowDays}
+              onChange={(e) =>
+                setStatsWindowDays(Math.max(1, Math.min(365, Number(e.target.value) || 1)))
+              }
+              aria-label="统计窗口天数"
+              className="cu-input w-[200px]"
+            />
+            <span className="text-white/40 text-xs">天 · 范围 1–365</span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {[7, 14, 30, 90].map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setStatsWindowDays(d)}
+                className={`${cuCtaGhost} px-3 py-1.5 text-xs ${
+                  statsWindowDays === d ? 'ring-1 ring-white/40' : ''
+                }`}
+              >
+                近 {d} 天
+              </button>
+            ))}
           </div>
 
           <div className="mt-4">

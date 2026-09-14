@@ -28,6 +28,8 @@ npm install --registry=https://registry.npmmirror.com
 
 1. **填 API Key** —— 设置 → Provider 与密钥。默认走 DeepSeek；Key 用系统凭据库加密后存进 `userData/keys.bin`，**不会写进 `config.json`，更不会进 git**。
 2. **设考试日期** —— 设置 → 学习计划。**不填的话，复习排程会退化成普通的间隔重复**，失去「考前冲刺」这一层设计。
+   同一个卡片里还有**统计窗口**（默认 30 天）：统计页的趋势曲线和「本周期 vs 上一周期」按它计算。
+   备考前期可以看长一点，冲刺阶段看短一点更能反映最近的状态。
 3. （可选）**改错题库目录** —— 默认在 `<文档>/MistakeBook`。
 
 按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> 即可框选一道题开始录入。
@@ -53,6 +55,9 @@ npm install --registry=https://registry.npmmirror.com
 **两条铁律**：
 
 - **文件是唯一真相源**。索引随时可以从 Markdown 全量重建（设置 → 重建索引，或删掉 `userData/index.db` 重启）。索引坏了不是事故。
+  ⚠ 唯一的例外是**复习历史**：Markdown 里只留得下「上次复习」和「轮次」，
+  中间过程一旦覆盖就没了。所以每次评分会往 vault 根的 `reviews.jsonl` **追加一行**，
+  重建索引时由它回填 —— 它和 Markdown 一样是用户数据，不是索引的一部分。
 - **截图是不可变证据**。模型认错了就改 Markdown 正文，原图永远留着 —— 将来换更好的模型可以重新识别。
 
 ## 目录导览
@@ -64,6 +69,7 @@ src/
     capture/    全局热键 + 全屏框选 overlay + 裁剪
     llm/        OpenAI 兼容客户端、提示词、Zod schema
     store/      paths / frontmatter / vault / index-db
+                dedup（查重的相似度，纯函数）/ trend（时间窗口，纯函数）/ reviews-log（复习事件）
     features/   错因分析、变式出题、考点排行
     config.ts   模型配置（多 provider + 按功能覆盖）
     settings.ts 考试日期、热键

@@ -2,7 +2,15 @@
  * 书库 — 错题列表主屏，支持筛选、详情叠加层、变式生成
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Mistake, MistakeSummary, MistakeBody, ListFilter, ErrorType } from '@shared/types'
+import type {
+  DuplicateGroup,
+  DuplicateHit,
+  Mistake,
+  MistakeSummary,
+  MistakeBody,
+  ListFilter,
+  ErrorType
+} from '@shared/types'
 import { STATUSES, ERROR_TYPES } from '@shared/types'
 import PageHeader from '../components/PageHeader'
 import MistakeCard from '../components/MistakeCard'
@@ -102,6 +110,12 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
   /* ── 导出 ──────────────────────────────────────── */
   const [exporting, setExporting] = useState(false)
   const [exportFeedback, setExportFeedback] = useState<string | null>(null)
+
+  /* ── 查重 ──────────────────────────────────────── */
+  const [dedupGroups, setDedupGroups] = useState<DuplicateGroup[] | null>(null)
+  const [dedupScanning, setDedupScanning] = useState(false)
+  const [dedupMsg, setDedupMsg] = useState<string | null>(null)
+  const [mergingGroup, setMergingGroup] = useState<string | null>(null)
 
   /* ── 数据获取（防抖 + 序列号防过期） ── */
   const seqRef = useRef(0)
@@ -229,6 +243,49 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
     }
   }
 
+  /* ── 查重 ── */
+  const handleScanDuplicates = async () => {
+    if (dedupScanning) return
+    setDedupScanning(true)
+    setDedupMsg(null)
+    const r = await window.api.duplicateScan()
+    setDedupScanning(false)
+    if (!r.ok) {
+      setDedupMsg(r.error ?? '查重失败')
+      return
+    }
+    setDedupGroups(r.data ?? [])
+  }
+
+  /**
+   * 一组里保留哪一条：**复习轮次最多的那条**（那是最难得的进度），同轮次则留最早的。
+   * 这个选择不能随便 —— 留错一条就等于把攒了很久的复习进度丢掉。
+   */
+  const pickKeeper = (items: DuplicateHit[]): DuplicateHit =>
+    [...items].sort(
+      (a, b) => b.reviewRound - a.reviewRound || a.created.localeCompare(b.created)
+    )[0]
+
+  const handleMergeGroup = async (items: DuplicateHit[]) => {
+    const keeper = pickKeeper(items)
+    const others = items.filter((it) => it.id !== keeper.id)
+    setMergingGroup(keeper.id)
+    setDedupMsg(null)
+    for (const it of others) {
+      const r = await window.api.merge(it.id, keeper.id)
+      if (!r.ok) {
+        setDedupMsg(r.error ?? '合并失败')
+        setMergingGroup(null)
+        return
+      }
+    }
+    setMergingGroup(null)
+    setDedupMsg(`已把 ${others.length} 条并入 ${keeper.created.slice(0, 10)} 那条`)
+    // 合并后重新扫一遍：原来的一组可能还有别的成员被牵进来
+    await handleScanDuplicates()
+    await fetchList(debouncedFilter)
+  }
+
   /* ── 渲染 ──────────────────────────────────────── */
   return (
     <div className="cu-enter">
@@ -237,6 +294,15 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
         subtitle={isFiltering ? `筛选出 ${items.length} 题` : `共 ${items.length} 题`}
         actions={
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void handleScanDuplicates()}
+              disabled={dedupScanning}
+              className={`${cuCtaGhost} !px-4 !py-2 text-sm ${dedupScanning ? 'opacity-60' : ''}`}
+            >
+              <Icon name="refresh" className="h-4 w-4" />
+              {dedupScanning ? '查重中…' : '查重'}
+            </button>
             <button
               type="button"
               onClick={() => void handleExport()}
@@ -258,6 +324,80 @@ export default function Library({ onCapture, hotkeyHint = 'Alt+Shift+A', onNavig
       {exportFeedback && (
         <div className={`${cuNotice('info')} mb-4`}>
           {exportFeedback}
+        </div>
+      )}
+
+      {/* 查重结果 */}
+      {dedupGroups !== null && (
+        <div className={`${cuCard({ tight: true })} mb-6`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-white/90">查重结果</h3>
+            <button
+              type="button"
+              onClick={() => {
+                setDedupGroups(null)
+                setDedupMsg(null)
+              }}
+              className="text-xs text-white/40 hover:text-white/70"
+            >
+              关闭
+            </button>
+          </div>
+
+          {dedupMsg && <div className={`${cuNotice('info')} mb-3`}>{dedupMsg}</div>}
+
+          {dedupGroups.length === 0 ? (
+            <p className="text-sm text-white/60">没有发现重复的题。</p>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-xs text-white/50 leading-relaxed">
+                共 {dedupGroups.length} 组疑似重复。合并只减少
+                <strong className="text-white/70">记录</strong>
+                ，不减少内容：题面、图片、复习进度都会保留到留下的那一条上，
+                被并掉的移入回收站（不是删除）。默认保留复习轮次最多的那条 ——
+                进度是最攒出来的东西，留错一条就白复习了。
+              </p>
+              {dedupGroups.map((g) => {
+                const keeper = pickKeeper(g.items)
+                const others = g.items.filter((i) => i.id !== keeper.id)
+                return (
+                  <div key={keeper.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 text-xs text-mint">
+                          保留 · 已复习 {keeper.reviewRound} 轮 · {keeper.created.slice(0, 10)}
+                        </div>
+                        {/* 题干预览必须走 Markdown —— 当纯文本渲染的话 $...$ 会原样露出美元符号 */}
+                        <div className="text-sm text-white/85 [&_p]:my-0 [&_p]:line-clamp-2">
+                          <Markdown source={keeper.questionHead} />
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleMergeGroup(g.items)}
+                        disabled={mergingGroup !== null}
+                        className={`${cuCtaGhost} shrink-0 !px-3 !py-1.5 text-xs ${
+                          mergingGroup !== null ? 'opacity-60' : ''
+                        }`}
+                      >
+                        {mergingGroup === keeper.id ? '合并中…' : `合并其余 ${others.length} 条`}
+                      </button>
+                    </div>
+                    <ul className="mt-3 space-y-2 border-t border-white/10 pt-3">
+                      {others.map((o) => (
+                        <li key={o.id} className="text-xs">
+                          <span className="text-white/40">并入 · 复习 {o.reviewRound} 轮</span>
+                          <div className="text-white/60 [&_p]:my-0 [&_p]:line-clamp-1">
+                            <Markdown source={o.questionHead} />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 

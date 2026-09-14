@@ -89,6 +89,8 @@ export function mistakeToMarkdown(m: Mistake): string {
   }
   if (m.llm) data.llm = { model: m.llm.model, at: m.llm.at }
   if (m.imagePath) data.image = m.imagePath
+  // 合并过的重复记录 id。留着是为了让「这道题其实错过三次」这件事不消失
+  if (m.mergedFrom && m.mergedFrom.length > 0) data.merged_from = m.mergedFrom
 
   // 保留未知的 frontmatter 键
   if (m._extra) {
@@ -186,7 +188,7 @@ export function markdownToMistake(raw: string): Mistake {
   const KNOWN_KEYS = new Set([
     'id', 'created', 'updated', 'source', 'subject', 'chapter', 'points',
     'type', 'level', 'my_answer', 'right_answer', 'error_type', 'status',
-    'confidence', 'review', 'llm', 'image'
+    'confidence', 'review', 'llm', 'image', 'merged_from'
   ])
 
   const extra: Record<string, unknown> = {}
@@ -218,6 +220,10 @@ export function markdownToMistake(raw: string): Mistake {
     },
     llm: parseLlm(d.llm),
     imagePath: asOptionalString(d.image),
+    mergedFrom: (() => {
+      const a = asStringArray(d.merged_from)
+      return a.length > 0 ? a : undefined
+    })(),
     ...(() => {
       const { body, extraBody } = parseBodySections(parsed.content)
       return {

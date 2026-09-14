@@ -3,7 +3,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import type { CapturePayload } from '@shared/ipc'
-import type { Extraction, MistakeBody } from '@shared/types'
+import type { DuplicateHit, Extraction, MistakeBody } from '@shared/types'
 import { QUESTION_TYPES, ERROR_TYPES } from '@shared/types'
 import Markdown from '../components/Markdown'
 import { cuCard, cuCtaPrimary, cuCtaGhost, cuNotice, Icon } from '../design/tokens'
@@ -48,6 +48,7 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
   })
 
   const [hasChanges, setHasChanges] = useState(false)
+  const [duplicates, setDuplicates] = useState<DuplicateHit[]>([])
 
   const { containerRef, trapFocus } = useModal({
     open: true,
@@ -129,25 +130,48 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
     []
   )
 
+  /* ── 查重：同一道题截两次会存两条，而两条会各自进复习队列、各自算进统计 ── */
+  useEffect(() => {
+    const question = form.body.question?.trim() ?? ''
+    // 题干还没识别出来时不查（空串对空串会匹配出一堆假重复）
+    if (!question || loading) {
+      setDuplicates([])
+      return
+    }
+    let cancelled = false
+    // 防抖：识别完到用户改完字段之间会连续变动，没必要每敲一个字都查一次
+    const timer = setTimeout(async () => {
+      const r = await window.api.duplicates({ question, subject: form.subject })
+      if (!cancelled && r.ok) setDuplicates(r.data ?? [])
+    }, 500)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [form.body.question, form.subject, loading])
+
   /* ── 保存 ──────────────────────────────────────── */
-  const handleSave = async () => {
+  const handleSave = async (mergeIntoId?: string) => {
     setSaving(true)
-    const r = await window.api.save({
-      extraction: {
-        subject: form.subject,
-        chapter: form.chapter,
-        points: form.points,
-        type: form.type as Extraction['type'],
-        level: form.level,
-        myAnswer: form.myAnswer || undefined,
-        rightAnswer: form.rightAnswer || undefined,
-        errorType: form.errorType as Extraction['errorType'] || undefined,
-        source: form.source || undefined,
-        confidence: extraction?.confidence ?? 1,
-        body: form.body
+    const r = await window.api.save(
+      {
+        extraction: {
+          subject: form.subject,
+          chapter: form.chapter,
+          points: form.points,
+          type: form.type as Extraction['type'],
+          level: form.level,
+          myAnswer: form.myAnswer || undefined,
+          rightAnswer: form.rightAnswer || undefined,
+          errorType: form.errorType as Extraction['errorType'] || undefined,
+          source: form.source || undefined,
+          confidence: extraction?.confidence ?? 1,
+          body: form.body
+        },
+        imageAbsPath: payload.imageAbsPath
       },
-      imageAbsPath: payload.imageAbsPath
-    })
+      mergeIntoId
+    )
     setSaving(false)
     if (r.ok) {
       onClose()
@@ -451,6 +475,44 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
           </div>
         )}
 
+        {/* 查重提示：同一道题截两次会存两条，而两条会各自进复习队列、各自算进统计 */}
+        {duplicates.length > 0 && (
+          <div className={`${cuNotice('warn')} mt-6`}>
+            <div className="text-sm text-white/90">
+              书库里已经有 {duplicates.length} 道很像的题（最高相似度{' '}
+              {Math.round(duplicates[0].score * 100)}%）
+            </div>
+            <ul className="mt-2 space-y-1">
+              {duplicates.map((d) => (
+                <li key={d.id} className="text-xs">
+                  <span className="text-white/40">
+                    {d.created.slice(0, 10)} · 已复习 {d.reviewRound} 轮
+                  </span>
+                  {/* 必须走 Markdown —— 当纯文本渲染的话 $...$ 会原样露出美元符号 */}
+                  <div className="text-white/70 [&_p]:my-0 [&_p]:line-clamp-1">
+                    <Markdown source={d.questionHead} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[11px] text-white/50">
+              「并入」不会新建记录：这次识别到的内容会补进那道题的
+              <strong className="text-white/70">空缺</strong>
+              里（已有的内容不动），它的复习进度也原样保留。确认是另一道题就选「仍然新建」。
+            </p>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => void handleSave(duplicates[0].id)}
+                disabled={saving || loading}
+                className={`${cuCtaPrimary} px-3.5 py-2 text-xs`}
+              >
+                并入相似度最高的那道
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 操作按钮 */}
         <div className="mt-6 flex justify-end gap-3 border-t border-white/10 pt-5">
           <button type="button" onClick={onClose} className={`${cuCtaGhost} !px-5 !py-2.5 text-sm`}>
@@ -470,7 +532,7 @@ export default function Composer({ payload, initial, onClose }: ComposerProps): 
             ) : (
               <>
                 <Icon name="check" className="h-4 w-4" />
-                保存
+                {duplicates.length > 0 ? '仍然新建一条' : '保存'}
               </>
             )}
           </button>

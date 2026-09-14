@@ -6,6 +6,8 @@ import type {
   AnalysisRecord,
   AnalysisSummary,
   AppSettings,
+  DuplicateGroup,
+  DuplicateHit,
   Extraction,
   FeatureKey,
   Grade,
@@ -46,6 +48,12 @@ export const IPC = {
   mistakeDelete: 'mistake:delete',
   /** 按当前筛选导出为一份 Markdown（考前打印/别的设备上翻） */
   mistakeExport: 'mistake:export',
+  /** 查重：这道题和书库里哪些题很像 */
+  mistakeDuplicates: 'mistake:duplicates',
+  /** 整库查重：扫出所有互为重复的组 */
+  mistakeDuplicateScan: 'mistake:duplicateScan',
+  /** 把两条重复记录合并成一条（source 移入回收站，保留 target 的复习进度） */
+  mistakeMerge: 'mistake:merge',
 
   reviewQuery: 'review:query',
   reviewGrade: 'review:grade',
@@ -106,13 +114,25 @@ export interface Api {
   extract(imageAbsPath: string): Promise<Result<Extraction>>
   extractFromClipboard(): Promise<Result<CapturePayload>>
 
-  save(input: MistakeInput): Promise<Result<{ id: string }>>
+  save(input: MistakeInput, mergeIntoId?: string): Promise<Result<{ id: string }>>
   list(filter: ListFilter): Promise<Result<MistakeSummary[]>>
   get(id: string): Promise<Result<Mistake>>
   update(id: string, patch: Partial<Mistake>): Promise<Result<null>>
   remove(id: string): Promise<Result<null>>
   /** 导出当前筛选下的错题为 Markdown；返回落盘路径与条数（取消时 count=0） */
   exportMarkdown(filter?: ListFilter): Promise<Result<{ path: string; count: number; canceled: boolean }>>
+
+  /** 这道题和书库里哪些题很像（同科目、相似度达阈值） */
+  duplicates(q: {
+    question: string
+    subject: string
+    /** 排除自己（改已有题时用） */
+    excludeId?: string
+  }): Promise<Result<DuplicateHit[]>>
+  /** 整库查重，返回互为重复的分组 */
+  duplicateScan(): Promise<Result<DuplicateGroup[]>>
+  /** 合并两条重复记录 */
+  merge(sourceId: string, targetId: string): Promise<Result<null>>
 
   /** 按范围 / 模式 / 顺序 / 批次取一组复习题目（「换一批」靠 offset 前进） */
   reviewQuery(query: ReviewQuery): Promise<Result<ReviewBatch>>

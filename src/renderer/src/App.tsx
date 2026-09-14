@@ -29,6 +29,12 @@ export default function App(): React.JSX.Element {
   const [editingTask, setEditingTask] = useState<CaptureTask | null>(null)
   const [hotkeyHint, setHotkeyHint] = useState('Alt+Shift+A')
   const timersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
+  /** tasks 的镜像，供事件回调同步读取（回调里读 state 会拿到过期值） */
+  const tasksRef = useRef<CaptureTask[]>([])
+
+  useEffect(() => {
+    tasksRef.current = tasks
+  }, [tasks])
 
   /* ── 从考点跳转到复习的初始范围 ────────────────────── */
   const [pendingReviewScope, setPendingReviewScope] = useState<ListFilter | null>(null)
@@ -174,39 +180,31 @@ export default function App(): React.JSX.Element {
   /* ── 处理截图完成回调 ── */
   const handleCaptured = useCallback(
     (payload: CapturePayload) => {
-      // 去重：同一张图不处理两次
-      setTasks((prev) => {
-        if (prev.some((t) => t.payload.imageAbsPath === payload.imageAbsPath)) return prev
-        const id = `task-${++taskCounter}`
-        const newTask: CaptureTask = {
-          id,
-          payload,
-          status: 'recognizing'
-        }
-        return [...prev, newTask]
-      })
+      // 去重：同一张图不处理两次（连按两次热键会产生同一张图）。
+      // 用 ref 而不是在 setTasks 的 updater 里判断 —— 同一瞬间到达的两张截图
+      // 会在 React 提交前都读到旧 state，去重就形同虚设。
+      if (tasksRef.current.some((t) => t.payload.imageAbsPath === payload.imageAbsPath)) return
 
-      // 找到刚添加的 task id
+      const id = `task-${++taskCounter}`
+      const newTask: CaptureTask = { id, payload, status: 'recognizing' }
+      // 同步更新 ref，让紧接着到达的第二张图能立刻看到它
+      tasksRef.current = [...tasksRef.current, newTask]
+      setTasks((prev) => [...prev, newTask])
+
       void (async () => {
         const autoSaveDelay = await getAutoSaveDelay()
-
         const r = await window.api.extract(payload.imageAbsPath)
         if (r.ok && r.data) {
-          // 通过 imageAbsPath 找回 task id
-          setTasks((prev) => {
-            const task = prev.find((t) => t.payload.imageAbsPath === payload.imageAbsPath)
-            if (!task) return prev
-            applyExtractionResult(task.id, r.data!, autoSaveDelay)
-            return prev
-          })
+          // 注意：不能把这个调用塞进 setTasks 的 updater 里 ——
+          // updater 里再调 setState 是渲染期更新，结果会被丢掉，
+          // 任务就永远卡在「正在识别」（截图脚本的断言正是这么发现它的）。
+          applyExtractionResult(id, r.data, autoSaveDelay)
         } else {
-          setTasks((prev) => {
-            const task = prev.find((t) => t.payload.imageAbsPath === payload.imageAbsPath)
-            if (!task) return prev
-            return prev.map((t) =>
-              t.id === task.id ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, status: 'error' as const, error: r.error ?? '识别失败' } : t
             )
-          })
+          )
         }
       })()
     },

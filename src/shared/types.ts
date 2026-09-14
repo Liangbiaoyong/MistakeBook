@@ -65,6 +65,11 @@ export interface Mistake {
   /** 相对 vault 的图片路径，如 assets/2026-09-13-a3f2.png */
   imagePath?: string
   body: MistakeBody
+  /**
+   * 合并过的重复记录 id（合并时被并掉的那些）。
+   * 留着是为了让「这道题其实错过三次」这件事不消失 —— 合并掉的是记录，不是历史。
+   */
+  mergedFrom?: string[]
   /** 未知的 frontmatter 键（往返保留用，不影响业务逻辑） */
   _extra?: Record<string, unknown>
   /** 未知的 body 节（往返保留用，不影响业务逻辑） */
@@ -92,6 +97,29 @@ export type MistakeSummary = Pick<
    */
   questionHead: string
   imagePath?: string
+}
+
+/* ────────────── 查重 ────────────── */
+
+/** 一条「和当前这道题很像」的已有记录 */
+export interface DuplicateHit {
+  id: string
+  /** 相似度 0–1 */
+  score: number
+  subject: string
+  created: string
+  status: Status
+  /** 已复习轮次 —— 合并时要保住的是它 */
+  reviewRound: number
+  /** 已有记录的题干预览（Markdown 片段） */
+  questionHead: string
+  hasImage: boolean
+}
+
+/** 书库整体查重时的一组重复（同一组内的题互为重复） */
+export interface DuplicateGroup {
+  /** 组内记录，按 created 升序；第一条是默认的保留项 */
+  items: DuplicateHit[]
 }
 
 /* ────────────── LLM 抽取结果 ────────────── */
@@ -172,6 +200,40 @@ export interface CountItem {
   count: number
 }
 
+/** 一天的量。新增与复习是两条独立曲线，别混在同一个数字里 */
+export interface TrendDay {
+  date: string
+  /** 当天新增错题数 */
+  added: number
+  /** 当天复习次数（评分事件数） */
+  reviewed: number
+}
+
+/** 一个时间窗口内的量 */
+export interface PeriodStats {
+  /** 新增错题数 */
+  added: number
+  /** 复习次数 */
+  reviewed: number
+  /** 评分「忘了」的次数 */
+  forgot: number
+  /**
+   * 遗忘率 0–1。该窗口一次都没复习过时为 null ——
+   * 不能拿 0 冒充「一道都没忘」，那是两回事。
+   */
+  forgotRate: number | null
+}
+
+/**
+ * 本窗口 vs 上一个等长窗口 —— 回答「这周比上周好了还是差了」。
+ * 全是「有史以来」的统计在备考后期没用：你更想知道的是趋势。
+ */
+export interface PeriodComparison {
+  days: number
+  current: PeriodStats
+  previous: PeriodStats
+}
+
 export interface StatsOverview {
   total: number
   bySubject: CountItem[]
@@ -179,10 +241,30 @@ export interface StatsOverview {
   byPoint: CountItem[]
   byChapter: CountItem[]
   byStatus: CountItem[]
-  /** 最近 N 天每日新增，用于错误量时间曲线 */
-  daily: { date: string; count: number }[]
+  /** 统计窗口天数（来自设置）。daily 与 trend 都以此为准 */
+  windowDays: number
+  /** 最近 windowDays 天每日量。**补齐没有数据的日子** —— 断点的曲线看不出趋势 */
+  daily: TrendDay[]
+  /** 本窗口 vs 上一窗口 */
+  trend: PeriodComparison
+  /**
+   * 全部复习事件条数。为 0 说明这份日志还没开始积累
+   * （早于该功能上线的复习历史没有记录）—— 界面必须说明，不能显示成「复习 0 次」。
+   */
+  reviewEvents: number
   /** 待复习数量 */
   dueCount: number
+}
+
+/** 一次复习评分事件，追加进 vault 的 reviews.jsonl */
+export interface ReviewEvent {
+  /** 错题 id */
+  id: string
+  /** 本地日期 YYYY-MM-DD */
+  date: string
+  grade: Grade
+  /** 评分后的轮次 */
+  round: number
 }
 
 export interface TopicRank {

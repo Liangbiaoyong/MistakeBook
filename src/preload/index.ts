@@ -22,12 +22,15 @@ const api: Api = {
   extract: (imageAbsPath) => ipcRenderer.invoke(IPC.extract, imageAbsPath),
   extractFromClipboard: () => ipcRenderer.invoke(IPC.extract, null),
 
-  save: (input) => ipcRenderer.invoke(IPC.mistakeSave, input),
+  save: (input, mergeIntoId) => ipcRenderer.invoke(IPC.mistakeSave, input, mergeIntoId),
   list: (filter) => ipcRenderer.invoke(IPC.mistakeList, filter),
   get: (id) => ipcRenderer.invoke(IPC.mistakeGet, id),
   update: (id, patch) => ipcRenderer.invoke(IPC.mistakeUpdate, id, patch),
   remove: (id) => ipcRenderer.invoke(IPC.mistakeDelete, id),
   exportMarkdown: (filter) => ipcRenderer.invoke(IPC.mistakeExport, filter),
+  duplicates: (q) => ipcRenderer.invoke(IPC.mistakeDuplicates, q),
+  duplicateScan: () => ipcRenderer.invoke(IPC.mistakeDuplicateScan),
+  merge: (sourceId, targetId) => ipcRenderer.invoke(IPC.mistakeMerge, sourceId, targetId),
 
   reviewQuery: (query) => ipcRenderer.invoke(IPC.reviewQuery, query),
   grade: (id, grade) => ipcRenderer.invoke(IPC.reviewGrade, id, grade),

@@ -6,11 +6,28 @@
  * 2. 写入必须原子：先写 .tmp 再 rename，绝不允许出现半截文件。
  */
 import { readFile, writeFile, rename, copyFile, unlink, mkdir, readdir } from 'node:fs/promises'
-import { join, dirname, relative, sep } from 'node:path'
-import type { Mistake, MistakeInput, MistakeSummary, ListFilter } from '@shared/types'
+import { join, dirname, relative, sep, extname } from 'node:path'
+import type {
+  Mistake,
+  MistakeBody,
+  MistakeInput,
+  MistakeSummary,
+  ListFilter,
+  ErrorType
+} from '@shared/types'
 import { mistakesDir, assetsDir, getVaultDir, getVaultStatus } from './paths'
 import { mistakeToMarkdown, markdownToMistake, pickUniqueId, mistakeRelPath } from './frontmatter'
-import { openIndex, initSchema, upsertRow, deleteRow, querySummaries } from './index-db'
+import {
+  openIndex,
+  initSchema,
+  upsertRow,
+  deleteRow,
+  querySummaries,
+  replaceReviews,
+  duplicateCandidates
+} from './index-db'
+import { readReviewEvents } from './reviews-log'
+import type { DedupCandidate } from './dedup'
 import { nextReview } from '../review'
 import { getSettings } from '../settings'
 
@@ -153,6 +170,132 @@ export async function saveMistake(
   return createMistake(input, model)
 }
 
+/* ────────────── 合并重复记录 ────────────── */
+
+const keepStr = (old?: string, next?: string): string | undefined =>
+  old && old.trim() ? old : next
+
+const keepNum = (old?: number, next?: number): number | undefined => (old != null ? old : next)
+
+const union = (a: string[], b: string[]): string[] => [...new Set([...a, ...b])]
+
+/**
+ * 把新信息**补进空缺**，绝不覆盖已有内容。
+ *
+ * 合并的语义必须是「补全」而不是「覆盖」：已有那份是用户看过、很可能手改过、
+ * 还带着复习进度的，用一次新识别的结果盖掉它，等于把用户的劳动抹掉。
+ * 复习进度（review / status / created / id）一律以目标记录为准。
+ */
+function mergeInto(
+  target: Mistake,
+  income: {
+    source?: string
+    chapter?: string[]
+    points?: string[]
+    level?: number
+    myAnswer?: string
+    rightAnswer?: string
+    errorType?: ErrorType
+    confidence?: number
+    body?: MistakeBody
+  }
+): Mistake {
+  const tb = target.body
+  const ib = income.body
+  return {
+    ...target,
+    source: keepStr(target.source, income.source),
+    // subject / type 是有默认值的必填项，目标一定非空 —— 题目归属以已有记录为准
+    chapter: union(target.chapter ?? [], income.chapter ?? []),
+    points: union(target.points ?? [], income.points ?? []),
+    level: keepNum(target.level, income.level),
+    myAnswer: keepStr(target.myAnswer, income.myAnswer),
+    rightAnswer: keepStr(target.rightAnswer, income.rightAnswer),
+    errorType: target.errorType ?? income.errorType,
+    // 取更高的一次：两次识别里更自信的那个更可能是对的
+    confidence: Math.max(target.confidence, income.confidence ?? 0),
+    body: {
+      question: keepStr(tb.question, ib?.question) ?? '',
+      myThought: keepStr(tb.myThought, ib?.myThought),
+      solution: keepStr(tb.solution, ib?.solution),
+      cause: keepStr(tb.cause, ib?.cause),
+      variant: keepStr(tb.variant, ib?.variant)
+    },
+    updated: new Date().toISOString()
+  }
+}
+
+/** 目标没有原图时，把 sourceAbsPath 复制成以 target 命名的资源文件 */
+async function adoptImage(target: Mistake, sourceAbsPath?: string, srcImagePath?: string): Promise<void> {
+  if (target.imagePath) return
+
+  if (sourceAbsPath) {
+    const fileName = `${target.id}${extname(sourceAbsPath) || '.png'}`
+    await mkdir(assetsDir(), { recursive: true })
+    await copyFile(sourceAbsPath, join(assetsDir(), fileName))
+    target.imagePath = `assets/${fileName}`
+    return
+  }
+
+  if (srcImagePath) {
+    // 目标是已有记录、源记录自带图片：复制一份，不能让目标继续指向将被移入 .trash 的文件
+    const srcAbs = join(getVaultDir(), srcImagePath)
+    const fileName = `${target.id}${extname(srcImagePath) || '.png'}`
+    await mkdir(assetsDir(), { recursive: true })
+    await copyFile(srcAbs, join(assetsDir(), fileName))
+    target.imagePath = `assets/${fileName}`
+  }
+}
+
+/**
+ * 保存时选择「并入已有的那道题」：不新建记录，把这次的识别结果补进目标。
+ * 走这条路就不会产生重复条目，目标的复习进度也原样保留。
+ */
+export async function mergeIntoExisting(
+  targetId: string,
+  input: MistakeInput,
+  model?: string
+): Promise<void> {
+  const target = await readMistake(targetId)
+  if (!target) throw new Error(`找不到要合并到的错题 ${targetId}`)
+
+  const merged = mergeInto(target, input.extraction)
+  await adoptImage(merged, input.imageAbsPath)
+  if (model && !merged.llm) merged.llm = { model, at: new Date().toISOString() }
+
+  await writeMistake(merged)
+}
+
+/**
+ * 把书库里已有的两条重复记录合并成一条：保留 `targetId`，`sourceId` 移入回收站。
+ * 保留目标而不是源，是为了保住复习进度 —— 那是攒出来的，重建不了。
+ */
+export async function mergeMistake(sourceId: string, targetId: string): Promise<void> {
+  if (sourceId === targetId) throw new Error('不能和自己合并')
+
+  const [source, target] = await Promise.all([readMistake(sourceId), readMistake(targetId)])
+  if (!source) throw new Error(`找不到错题 ${sourceId}`)
+  if (!target) throw new Error(`找不到错题 ${targetId}`)
+
+  const merged = mergeInto(target, {
+    source: source.source,
+    chapter: source.chapter,
+    points: source.points,
+    level: source.level,
+    myAnswer: source.myAnswer,
+    rightAnswer: source.rightAnswer,
+    errorType: source.errorType,
+    confidence: source.confidence,
+    body: source.body
+  })
+  // 合并掉的是记录，不是历史 —— 记下它曾经是两道题
+  merged.mergedFrom = [...(target.mergedFrom ?? []), ...(source.mergedFrom ?? []), source.id]
+
+  await adoptImage(merged, undefined, source.imagePath)
+  await writeMistake(merged)
+  await deleteMistake(sourceId)
+}
+
 /** 删除错题及其图片 */
 export async function deleteMistake(id: string): Promise<void> {
   const filePath = await findMistakeFile(id)
@@ -292,5 +435,20 @@ export async function rebuildIndex(): Promise<{ count: number; needsRebuild: boo
       console.error('[vault] 重建时跳过无法解析的文件：', filePath, e)
     }
   }
+
+  // 复习历史重建不出来（Markdown 只留得下「上次复习」与轮次），
+  // 所以必须从 vault 里的 reviews.jsonl 回填 —— 否则重建一次，趋势统计就全成 0 了
+  replaceReviews(db, await readReviewEvents())
+
   return { count, needsRebuild }
+}
+
+/**
+ * 查重候选。单条查重时传 subject 缩小范围；整库扫描不传。
+ * 取的是索引里的**完整题干**，不是列表那种截断预览。
+ */
+export function dedupCandidates(subject?: string): DedupCandidate[] {
+  const { db } = openIndex()
+  initSchema(db)
+  return duplicateCandidates(db, subject)
 }

@@ -60,6 +60,9 @@
 **两条数据道**：
 - **真相源 = Markdown 文件**（可 git、可手改、任何编辑器能读）
 - **索引 = SQLite**，位于 `userData/index.db`，**随时可从文件重建**
+  - ⚠ 唯一的例外是**复习历史**：Markdown 只留得下「上次复习」与「轮次」，中间过程重建不出来。
+    因此每次评分追加一行到 vault 根的 `reviews.jsonl`（用户数据，不是索引），重建索引时由它回填。
+  - 同理，**合并掉的重复记录**只留下 `merged_from` 里的 id 列表 —— 记录能合，历史不能凭空造。
 
 ## 5. 数据模型
 
@@ -68,7 +71,8 @@
 ```
 <vault>/                              # 默认 <Documents>/MistakeBook
 ├── mistakes/<科目>/<章节>/<id>.md
-└── assets/<id>.png                   # 原始截图，只增不改（不可变证据）
+├── assets/<id>.png                   # 原始截图，只增不改（不可变证据）
+└── reviews.jsonl                     # 复习事件，一行一次评分（追加写）
 ```
 
 ### 5.2 frontmatter
@@ -90,7 +94,12 @@ confidence: 0.9
 review: { last: null, next: 2026-09-15, round: 1 }
 llm: { model: deepseek-flash, at: 2026-09-13T14:23:30+08:00 }
 image: assets/2026-09-13-a3f29c.png
+merged_from: [2026-09-11-b71e04]       # 可选：被合并进来的重复记录 id
 ```
+
+**`status` 是派生值，不是可随手改的标记**：`deriveStatus(grade, round)` ——
+顺利复习到第 4 轮才 `mastered`；答「忘了 / 困难」一律退回 `reviewing`（轮次本身也已回退）。
+不这样绑的话，它就会退化成一个只增不减的虚荣数字。
 
 ### 5.3 正文小节（固定顺序，缺则略）
 

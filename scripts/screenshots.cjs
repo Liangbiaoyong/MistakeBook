@@ -64,10 +64,24 @@ const STATS = {
   byPoint: [{ key: '树的度', count: 1 }, { key: 'Cache 映射', count: 1 }, { key: 'TCP 拥塞控制', count: 1 }, { key: '定积分', count: 1 }, { key: '死锁', count: 1 }, { key: '最短路径', count: 1 }],
   byChapter: [{ key: '数据结构', count: 2 }, { key: '组成原理', count: 1 }, { key: '计算机网络', count: 1 }, { key: '操作系统', count: 1 }, { key: '高等数学', count: 1 }],
   byStatus: [{ key: 'new', count: 3 }, { key: 'reviewing', count: 2 }, { key: 'mastered', count: 1 }],
-  daily: Array.from({ length: 14 }, (_, i) => ({
-    date: `2026-09-${String(i + 1).padStart(2, '0')}`,
-    count: [2, 1, 3, 0, 4, 2, 1, 5, 3, 0, 2, 4, 1, 3][i]
-  })),
+  windowDays: 30,
+  // 补齐 30 天连续日期（截图里曲线不该有断点）
+  daily: Array.from({ length: 30 }, (_, i) => {
+    const d = new Date(2026, 8, 14) // 2026-09-14
+    d.setDate(d.getDate() - (29 - i))
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return {
+      date,
+      added: [2, 1, 3, 0, 4, 2, 1, 5, 3, 0, 2, 4, 1, 3, 0, 2, 1, 4, 2, 0, 3, 1, 2, 5, 1, 0, 2, 3, 1, 2][i],
+      reviewed: [0, 0, 2, 5, 3, 0, 4, 6, 2, 8, 5, 3, 0, 4, 7, 9, 6, 4, 2, 5, 8, 6, 3, 7, 9, 4, 6, 8, 5, 7][i]
+    }
+  }),
+  trend: {
+    days: 30,
+    current: { added: 41, reviewed: 118, forgot: 19, forgotRate: 0.16 },
+    previous: { added: 52, reviewed: 86, forgot: 23, forgotRate: 0.27 }
+  },
+  reviewEvents: 204,
   dueCount: 3
 }
 
@@ -105,6 +119,7 @@ ipcMain.handle('config:get', () => ok({
 }))
 ipcMain.handle('vault:get', () => ok('D:/Documents/MistakeBook'))
 ipcMain.handle('settings:get', () => ok({ hotkey: 'Alt+Shift+A', statsWindowDays: 30, examDate: '2026-12-26' }))
+ipcMain.handle('settings:set', (_e, p) => ok({ hotkey: 'Alt+Shift+A', statsWindowDays: 30, ...p }))
 ipcMain.handle('mistake:list', () => ok(LIST))
 ipcMain.handle('mistake:get', () => ok(FULL))
 // 复习页现在走 review:query（有范围/批次概念），按 limit/offset 切片
@@ -117,6 +132,35 @@ ipcMain.handle('review:query', (_e, q) => {
 })
 ipcMain.handle('review:grade', () => ok(null))
 ipcMain.handle('stats:overview', () => ok(STATS))
+// 录入窗挂载后会查一次重（Composer 的查重提示）；没有这道桩 invoke 会 reject
+const DUP_HIT = {
+  id: 'm-dup-1',
+  score: 0.93,
+  subject: '408',
+  created: '2026-09-02T10:00:00.000Z',
+  status: 'reviewing',
+  reviewRound: 4,
+  questionHead: '设一棵二叉树有 $n$ 个结点，求叶结点的个数是多少？',
+  hasImage: true
+}
+const DUP_GROUP = {
+  items: [
+    DUP_HIT,
+    {
+      id: 'm-dup-2',
+      score: 0.88,
+      subject: '408',
+      created: '2026-09-11T10:00:00.000Z',
+      status: 'new',
+      reviewRound: 0,
+      questionHead: '设一棵二叉树有n个结点，求叶结点的个数是多少',
+      hasImage: false
+    }
+  ]
+}
+ipcMain.handle('mistake:duplicates', () => ok([DUP_HIT]))
+ipcMain.handle('mistake:duplicateScan', () => ok([DUP_GROUP]))
+ipcMain.handle('mistake:merge', () => ok(null))
 ipcMain.handle('config:listModels', () => ok([]))
 let extractMode = 'slow'
 ipcMain.handle('llm:extract', async () => {
@@ -213,6 +257,40 @@ app.whenReady().then(async () => {
   await wait(500)
   console.log('[shots] → 详情完成')
 
+  // 1b. 查重面板（书库 → 查重）：验证重复组渲染出来、且合并按钮可用
+  const scanClicked = await js(
+    `(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.includes('查重')); if (b) b.click(); return !!b })()`
+  )
+  await wait(900)
+  const dedupInfo = await js(`(() => {
+    const text = document.body.innerText
+    const mergeBtn = [...document.querySelectorAll('button')].find(x => x.textContent.includes('合并其余'))
+    return {
+      hasPanel: text.includes('查重结果'),
+      hasGroup: text.includes('保留 · 已复习 4 轮'),
+      hasMerge: !!mergeBtn,
+      // 查重面板里的题干也是 Markdown 片段，$...$ 不该以字面美元符号露出来
+      strayDollars: (text.match(/\\$/g) || []).length,
+      katex: document.querySelectorAll('.katex').length
+    }
+  })()`)
+  console.log('[shots] 查重面板:', JSON.stringify({ scanClicked, ...dedupInfo }))
+  if (
+    !scanClicked ||
+    !dedupInfo.hasPanel ||
+    !dedupInfo.hasGroup ||
+    !dedupInfo.hasMerge ||
+    dedupInfo.strayDollars > 0
+  ) {
+    console.log('[shots] 断言失败：查重面板没有正确渲染（合并按钮缺失 / 公式没渲染）')
+    app.exit(4)
+    return
+  }
+  await shoot('library-dedup.png')
+  await js(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '关闭'); if (b) b.click(); return !!b })()`)
+  await wait(400)
+  console.log('[shots] → 查重完成')
+
   // 2. 复习
   await click('复习'); await wait(900); await shoot('review.png')
 
@@ -231,16 +309,31 @@ app.whenReady().then(async () => {
   await wait(1500)
   await shoot('widget-recognizing.png')
 
-  // 丢掉这个卡住的任务
-  await win.webContents.executeJavaScript(
-    `(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('丢弃')); if(b) b.click(); return !!b })()`
-  )
-  await wait(600)
+  // 识别中的卡片只有进度条、**没有「丢弃」按钮**，所以这个任务会一直挂着。
+  // 必须把渲染层重新加载来清掉它：handleCaptured 里有「同一张图不处理两次」的去重，
+  // 不清掉的话下一步的 capture 会被直接忽略，截图就悄悄变成上一张的样子。
+  win.webContents.reload()
+  await wait(1800)
+  await click('书库'); await wait(600)
 
   // 6. 右下角浮层：识别完成（倒计时 + 保存/编辑/丢弃）
   extractMode = 'fast'
   win.webContents.send('capture:captured', payload)
   await wait(2200)
+  const readyInfo = await js(`(() => {
+    const text = document.body.innerText
+    return {
+      hasEdit: [...document.querySelectorAll('button')].some(b => b.textContent.trim() === '编辑'),
+      hasCountdown: /\\d+\\s*秒后自动保存/.test(text),
+      tail: text.slice(-120)
+    }
+  })()`)
+  console.log('[shots] 识别完成浮层:', JSON.stringify(readyInfo))
+  if (!readyInfo.hasEdit || !readyInfo.hasCountdown) {
+    console.log('[shots] 断言失败：识别完成的浮层没有出现「编辑」和倒计时')
+    app.exit(5)
+    return
+  }
   await shoot('widget-ready.png')
 
   // 7. 点「编辑」进完整录入窗（结果预填）
@@ -248,6 +341,20 @@ app.whenReady().then(async () => {
     `(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('编辑')); if(b) b.click(); return !!b })()`
   )
   await wait(1500)
+  // 录入窗里也有查重提示（题干是 Markdown 片段），顺带断言公式渲染、没有残留 $
+  const composerInfo = await js(`(() => {
+    const text = document.body.innerText
+    return {
+      hasDupBanner: text.includes('书库里已经有'),
+      strayDollars: (text.match(/\\$/g) || []).length
+    }
+  })()`)
+  console.log('[shots] 录入窗:', JSON.stringify(composerInfo))
+  if (!composerInfo.hasDupBanner || composerInfo.strayDollars > 0) {
+    console.log('[shots] 断言失败：录入窗的查重提示没出现，或题干公式没渲染')
+    app.exit(6)
+    return
+  }
   await shoot('composer-filled.png')
 
   console.log('[shots] 完成')

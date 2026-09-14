@@ -61,10 +61,15 @@ export default function Stats({ onNavigateReview }: StatsProps) {
         chart.setOption({
           ...darkTheme,
           tooltip: { trigger: 'axis' },
-          grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+          legend: {
+            data: ['新增错题', '复习次数'],
+            textStyle: { color: 'rgba(255,255,255,0.6)' },
+            top: 0,
+          },
+          grid: { left: '3%', right: '4%', bottom: '3%', top: 36, containLabel: true },
           xAxis: {
             type: 'category',
-            data: stats.daily.map((d) => d.date),
+            data: stats.daily.map((d) => d.date.slice(5)),
             axisLabel: { color: 'rgba(255,255,255,0.6)' },
           },
           yAxis: {
@@ -73,7 +78,8 @@ export default function Stats({ onNavigateReview }: StatsProps) {
           },
           series: [
             {
-              data: stats.daily.map((d) => d.count),
+              name: '新增错题',
+              data: stats.daily.map((d) => d.added),
               type: 'line',
               smooth: true,
               lineStyle: { color: '#ff6b6b', width: 2 },
@@ -85,6 +91,25 @@ export default function Stats({ onNavigateReview }: StatsProps) {
               },
               itemStyle: { color: '#ff6b6b' },
             },
+            // 还没有任何复习记录时不要画那条恒为 0 的线 —— 它看着像「你一道都没复习」
+            ...(stats.reviewEvents > 0
+              ? [
+                  {
+                    name: '复习次数',
+                    data: stats.daily.map((d) => d.reviewed),
+                    type: 'line' as const,
+                    smooth: true,
+                    lineStyle: { color: '#4ecdc4', width: 2 },
+                    areaStyle: {
+                      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(78,205,196,0.25)' },
+                        { offset: 1, color: 'rgba(78,205,196,0.03)' },
+                      ]),
+                    },
+                    itemStyle: { color: '#4ecdc4' },
+                  },
+                ]
+              : []),
           ],
         })
       }
@@ -253,6 +278,65 @@ export default function Stats({ onNavigateReview }: StatsProps) {
     },
   ]
 
+  const { trend } = stats
+  // 复习日志是随这一版才有的一张新表。一次都还没有记录时不能显示成「复习 0 次」——
+  // 那会被读成「我一道都没复习」，而事实是「还没开始记」。
+  const noReviewLog = stats.reviewEvents === 0
+
+  /** 与上一周期比：多了 / 少了 / 持平。betterWhen='down' 的指标（遗忘率）好坏相反 */
+  const delta = (cur: number, prev: number, betterWhen: 'up' | 'down' = 'up'): React.JSX.Element => {
+    const d = cur - prev
+    if (d === 0) return <span className="text-white/40">持平</span>
+    const better = betterWhen === 'up' ? d > 0 : d < 0
+    return (
+      <span className={better ? 'text-mint' : 'text-coral'}>
+        {d > 0 ? '↑' : '↓'}
+        {Math.abs(d)}
+      </span>
+    )
+  }
+
+  const pct = (r: number | null): string => (r == null ? '—' : `${Math.round(r * 100)}%`)
+  // 三个指标统一成同一条判断规则：**少错、多练、少忘就是进步**（绿）。
+  // 新增错题减少 = 好，复习次数增加 = 好，遗忘率下降 = 好。
+  const trendTiles = [
+    {
+      label: '新增错题',
+      icon: 'library' as const,
+      value: String(trend.current.added),
+      prev: `前 ${trend.days} 天 ${trend.previous.added}`,
+      change: delta(trend.current.added, trend.previous.added, 'down'),
+    },
+    {
+      label: '复习次数',
+      icon: 'review' as const,
+      value: String(trend.current.reviewed),
+      prev: `前 ${trend.days} 天 ${trend.previous.reviewed}`,
+      change: delta(trend.current.reviewed, trend.previous.reviewed),
+    },
+    {
+      label: '遗忘率',
+      icon: 'brain' as const,
+      value: pct(trend.current.forgotRate),
+      prev:
+        trend.previous.forgotRate == null
+          ? `前 ${trend.days} 天没复习`
+          : `前 ${trend.days} 天 ${pct(trend.previous.forgotRate)}`,
+      // 见过的东西忘得少（↓）才是进步
+      change:
+        trend.current.forgotRate == null || trend.previous.forgotRate == null ? (
+          <span className="text-white/30">—</span>
+        ) : (
+          delta(
+            Math.round(trend.current.forgotRate * 100),
+            Math.round(trend.previous.forgotRate * 100),
+            'down'
+          )
+        ),
+      hint: `${trend.current.forgot} / ${trend.current.reviewed} 次评了「忘了」`,
+    },
+  ]
+
   return (
     <div className="p-8">
       <PageHeader title="统计" subtitle="错题趋势与分布分析" />
@@ -273,10 +357,49 @@ export default function Stats({ onNavigateReview }: StatsProps) {
         ))}
       </div>
 
+      <div className={cuCard({ tight: true }) + ' mt-8'}>
+        <div className="flex items-baseline justify-between mb-4">
+          <h3 className="font-semibold text-white/90">
+            近 {stats.windowDays} 天
+          </h3>
+          <span className="text-[11px] text-white/40">
+            绿色 = 进步：少错 / 多练 / 少忘
+          </span>
+        </div>
+
+        {noReviewLog ? (
+          <p className="text-sm text-white/50 leading-relaxed">
+            复习记录从这一版起才开始统计，暂时没有可对比的数据。
+            先去复习几道题，这里就会告诉你<strong className="text-white/70">这周比上周好了还是差了</strong>。
+          </p>
+        ) : (
+          <div className="grid grid-cols-3 gap-4">
+            {trendTiles.map((t) => (
+              <div key={t.label} className="flex items-start gap-3">
+                <div className={`${cuIconBox} h-10 w-10 shrink-0`}>
+                  <Icon name={t.icon} className="h-5 w-5 text-white/70" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-white/60 text-xs">{t.label}</div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-white font-bold text-lg">{t.value}</span>
+                    <span className="text-xs">{t.change}</span>
+                  </div>
+                  <div className="text-[11px] text-white/40 mt-0.5">{t.prev}</div>
+                  {t.hint && <div className="text-[11px] text-white/30">{t.hint}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-2 gap-6 mt-8">
         {stats.daily.length > 0 && (
           <div className={cuCard({ tight: true })}>
-            <h3 className="font-semibold text-white/90 mb-4">每日错题量</h3>
+            <h3 className="font-semibold text-white/90 mb-4">
+              每日新增与复习量 · 近 {stats.windowDays} 天
+            </h3>
             <div ref={dailyChartRef} className="h-48" />
           </div>
         )}

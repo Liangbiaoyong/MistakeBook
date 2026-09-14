@@ -8,6 +8,8 @@ import type { CapturePayload } from '@shared/ipc'
 import type {
   AnalysisSummary,
   AppSettings,
+  DuplicateGroup,
+  DuplicateHit,
   Extraction,
   FeatureKey,
   Grade,
@@ -19,6 +21,7 @@ import type {
   ProviderConfig,
   Result,
   ReviewBatch,
+  ReviewEvent,
   ReviewQuery,
   TopicRank
 } from '@shared/types'
@@ -37,9 +40,15 @@ import {
   updateMistake,
   deleteMistake,
   rebuildIndex,
-  allMistakes
+  allMistakes,
+  dedupCandidates,
+  mergeIntoExisting,
+  mergeMistake
 } from './store/vault'
-import { openIndex, initSchema, statsOverview, countRows } from './store/index-db'
+import { findDuplicates, findDuplicateGroups, groupToHits } from './store/dedup'
+import { appendReviewEvent } from './store/reviews-log'
+import { localDate } from './store/trend'
+import { openIndex, initSchema, statsOverview, countRows, recordReview } from './store/index-db'
 import {
   getPublicConfig,
   getProviderById,
@@ -375,13 +384,20 @@ function registerHandlers(): void {
     })
   })
 
-  handle(IPC.mistakeSave, async (input: MistakeInput) => {
-    const { id } = await saveMistake(
-      { ...input, imageAbsPath: input.imageAbsPath ?? lastCapture?.imageAbsPath },
-      undefined,
-      // 记录真正做识别的模型，而不是硬编码一个名字
-      getFeatureModel('capture').model
-    )
+  handle(IPC.mistakeSave, async (input: MistakeInput, mergeIntoId?: string) => {
+    const model = getFeatureModel('capture').model
+    const withImage: MistakeInput = {
+      ...input,
+      imageAbsPath: input.imageAbsPath ?? lastCapture?.imageAbsPath
+    }
+
+    // 用户确认「并入已有的那道题」：不新建记录，避免又生出一条重复
+    if (mergeIntoId) {
+      await mergeIntoExisting(mergeIntoId, withImage, model)
+      return { id: mergeIntoId }
+    }
+
+    const { id } = await saveMistake(withImage, undefined, model)
     return { id }
   })
 
@@ -461,6 +477,27 @@ function registerHandlers(): void {
     return { path: res.filePath, count: n, canceled: false }
   })
 
+  handle(
+    IPC.mistakeDuplicates,
+    async (q: { question: string; subject: string; excludeId?: string }): Promise<DuplicateHit[]> => {
+      if (!q.question?.trim()) return []
+      const candidates = dedupCandidates(q.subject).filter((c) => c.id !== q.excludeId)
+      return findDuplicates(q.question, candidates)
+    }
+  )
+
+  handle(IPC.mistakeDuplicateScan, async (): Promise<DuplicateGroup[]> => {
+    const groups = findDuplicateGroups(dedupCandidates())
+    logLine('dedup', `整库查重：${groups.length} 组重复`)
+    return groups.map((g) => ({ items: groupToHits(g) }))
+  })
+
+  handle(IPC.mistakeMerge, async (sourceId: string, targetId: string) => {
+    await mergeMistake(sourceId, targetId)
+    logLine('dedup', `合并重复：${sourceId} → ${targetId}`)
+    return null
+  })
+
   handle(IPC.reviewQuery, async (q: ReviewQuery): Promise<ReviewBatch> => {
     // 「再做一遍这一批」：直接按给定 id 顺序取。
     // 那批题刚评过分、next 已经推到未来，用 mode:'due' 重查只会拿到 0 条 ——
@@ -529,13 +566,28 @@ function registerHandlers(): void {
     // 状态要跟着复习历史走 —— 否则它永远停在「未复习」，统计页的「已掌握」永远是 0
     const status = deriveStatus(grade, review.round)
     await updateMistake(id, { review, status })
+
+    // 记一笔复习事件。趋势统计靠它 —— 光看 status 和 last_review 是算不出「这周比上周」的。
+    // 先落 vault 的日志（真相源），再更新索引；写日志失败也不能让评分本身失败。
+    const event: ReviewEvent = { id, date: localDate(new Date()), grade, round: review.round }
+    try {
+      await appendReviewEvent(event)
+    } catch (e) {
+      logLine('review', `复习日志写入失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+    try {
+      recordReview(openIndex().db, event)
+    } catch (e) {
+      logLine('review', `复习索引写入失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+
     return { review, status }
   })
 
   handle(IPC.statsOverview, () => {
     const { db } = openIndex()
     initSchema(db)
-    return statsOverview(db)
+    return statsOverview(db, getSettings().statsWindowDays)
   })
 
   handle(IPC.analysisErrorPatterns, async (filter: ListFilter | undefined) => {
